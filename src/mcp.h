@@ -8,20 +8,36 @@
 #define MCP_MAX_REQUEST_BYTES (64u * 1024u)
 #define MCP_MAX_QUERY_BYTES SYSREF_MAX_QUERY_BYTES
 
-/* Static tools/list result: keep description + schema as small as possible.
- * This is the entire MCP surface: one tool. The `stats` field is opt-in and
- * costs one line of schema: an agent that wants to know how much context it
- * just saved asks for it, and every other call stays byte-identical. That
- * matters for a tool whose entire claim is context reduction -- an agent
- * cannot hold that claim to account if the only way to measure it is a CLI
- * flag it cannot reach. */
-#define SYSREF_TOOLS_LIST_JSON                                                              \
-	"{\"tools\":[{\"name\":\"man\",\"description\":\"Get minimal local man-page context " \
-	"for command syntax or C symbols (source=api).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"           \
-	"\"query\":{\"type\":\"string\"},\"section\":{\"type\":\"string\"},"                   \
-	"\"source\":{\"type\":\"string\",\"enum\":[\"man\",\"doc\",\"headers\",\"api\"]},"            \
-	"\"stats\":{\"type\":\"boolean\"}},"                                                   \
-	"\"required\":[\"query\"]}}]}"
+/* Static tools/list result. Descriptions are the discovery metadata: each
+ * one says when to use the tool in 5-10 words, nothing more. `man` keeps
+ * its legacy `source=` selector for compatibility (marked legacy in the
+ * manual, not here); new agents use the dedicated `doc` and `api` tools.
+ * The `stats` field stays opt-in on all three so the common call pays
+ * nothing for it. */
+#define SYSREF_TOOLS_LIST_JSON \
+"{\"tools\":[" \
+"{\"name\":\"man\"," \
+"\"description\":\"Look up Linux manual pages, commands and options.\"," \
+"\"inputSchema\":{\"type\":\"object\",\"properties\":{" \
+"\"query\":{\"type\":\"string\"}," \
+"\"section\":{\"type\":\"string\"}," \
+"\"source\":{\"type\":\"string\",\"enum\":[\"man\",\"doc\",\"headers\",\"api\"]}," \
+"\"stats\":{\"type\":\"boolean\"}}," \
+"\"required\":[\"query\"]}}," \
+"{\"name\":\"doc\"," \
+"\"description\":\"Find installed package documentation, guides and examples.\"," \
+"\"inputSchema\":{\"type\":\"object\",\"properties\":{" \
+"\"query\":{\"type\":\"string\"}," \
+"\"stats\":{\"type\":\"boolean\"}}," \
+"\"required\":[\"query\"]}}," \
+"{\"name\":\"api\"," \
+"\"description\":\"Find C declarations, API contracts and header ownership.\"," \
+"\"inputSchema\":{\"type\":\"object\",\"properties\":{" \
+"\"symbol\":{\"type\":\"string\"}," \
+"\"header\":{\"type\":\"string\"}," \
+"\"stats\":{\"type\":\"boolean\"}}," \
+"\"required\":[]}}" \
+"]}"
 
 int conf_load(const char *path, char *key, size_t keysz);
 int run_stdio(void);

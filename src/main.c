@@ -18,7 +18,7 @@ static const char *usage =
     "  sysref --source api SYMBOL    declaration and local API documentation\n"
     "  sysref --source man QUERY      query native man pages (default)\n"
     "  sysref --stats QUERY [SECTION] print result plus token metrics\n"
-    "  sysref --mcp                   MCP stdio server (one tool: man)\n"
+    "  sysref --mcp                   MCP stdio server (tools: man, doc, api)\n"
     "  sysref --http[=ADDR] | --web[=ADDR]   webMCP HTTP server (default 127.0.0.1:8931)\n"
     "                                 requires APIKEY in /etc/sysref/sysref.conf\n"
     "  sysref --conf PATH             config file path (APIKEY for webMCP)\n"

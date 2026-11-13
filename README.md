@@ -184,29 +184,34 @@ No-match output is one compact line, e.g.
 
 ## MCP endpoint
 
-`sysref` exposes a single tool, `man(query, section?, source?)`, over two transports:
+`sysref` exposes exactly three tools over two transports (initialize advertises
+it as local Linux documentation, manual pages and C API reference):
 
 - **stdio** (`--mcp`) — for agents that launch local MCP servers (codex,
   opencode, Claude, ...).
 - **webMCP HTTP** (`--http[=ADDR]` / `--web[=ADDR]`) — JSON-RPC over HTTP
   with bearer-key auth, for network clients.
 
-Tool schema (static, ~67 tokens):
+| tool | when to use it |
+| ---- | -------------- |
+| `man(query, section?)` | Look up Linux manual pages, commands and options. |
+| `doc(query)` | Find installed package documentation, guides and examples. |
+| `api(symbol?, header?)` | Find C declarations, API contracts and header ownership. |
+
+`man` keeps a legacy `source` selector (`man`/`doc`/`headers`/`api`) for
+compatibility; new agents use the dedicated tool. A bare `api` symbol
+searches every configured include root; a bare header reports availability.
+
+Tool schemas (static, small — `man` keeps `query` required plus optional
+`section` and legacy `source`; `doc` requires `query`; `api` takes optional
+`symbol` and `header`, at least one required):
 
 ```json
-{
-  "name": "man",
-  "description": "Get minimal local man-page context for command syntax.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "query": { "type": "string" },
-      "section": { "type": "string" },
-      "source": { "type": "string", "enum": ["man", "doc", "headers"] }
-    },
-    "required": ["query"]
-  }
-}
+[
+  {"name": "man", "required": ["query"]},
+  {"name": "doc", "required": ["query"]},
+  {"name": "api", "required": []}
+]
 ```
 
 ### codex

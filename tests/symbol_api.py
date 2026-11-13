@@ -155,23 +155,41 @@ check('same installed package/version' in run('api', 'mpfr_subnormalize'), 'vers
 s = run('man', 'demo')
 check('SYNOPSIS' in s and 'demo' in s, 'existing native man query')
 
-# One MCP tool with backward-compatible defaults, framed and newline transports.
+# Three discoverable MCP tools sharing one handler, framed and newline transports.
 def rpc(method, params=None, framed=False):
     req = json.dumps(dict(jsonrpc='2.0', id=1, method=method, params=params or {}))
     data = (f'Content-Length: {len(req)}\r\n\r\n{req}' if framed else req+'\n').encode()
     p = subprocess.run([binary, '--mcp'], input=data, capture_output=True, env=env, timeout=30)
     raw = p.stdout.split(b'\r\n\r\n', 1)[-1]
     return json.loads(raw)
+init = rpc('initialize', {'protocolVersion': '2025-03-26'})
+check(init['result'].get('instructions') == 'Local Linux documentation, manual pages and C API reference.', 'initialize advertises server purpose')
+check(init['result']['serverInfo']['name'] == 'sysref', 'initialize server identity')
 schema = rpc('tools/list')['result']['tools']
-check(len(schema) == 1 and schema[0]['name'] == 'man', 'single existing MCP tool')
-check('api' in schema[0]['inputSchema']['properties']['source']['enum'], 'API schema')
+check([t['name'] for t in schema] == ['man', 'doc', 'api'], 'exactly three MCP tools')
+by_name = {t['name']: t for t in schema}
+check(by_name['man']['description'] == 'Look up Linux manual pages, commands and options.', 'man help text')
+check(by_name['doc']['description'] == 'Find installed package documentation, guides and examples.', 'doc help text')
+check(by_name['api']['description'] == 'Find C declarations, API contracts and header ownership.', 'api help text')
+check('api' in by_name['man']['inputSchema']['properties']['source']['enum'], 'legacy source selector retained on man')
+check(by_name['doc']['inputSchema']['required'] == ['query'], 'doc query required')
+check(by_name['api']['inputSchema']['required'] == [], 'api symbol/header optional with server-side validation')
 for framed in (False, True):
-    response = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'mpfr_subnormalize', 'source': 'api'}}, framed)
-    check(signature in response['result']['content'][0]['text'], f'MCP API framed={framed}')
+    response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize'}}, framed)
+    check(signature in response['result']['content'][0]['text'], f'MCP api tool framed={framed}')
+response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize', 'header': 'mpfr.h'}})
+check(signature in response['result']['content'][0]['text'] and 'HEADER: ' in response['result']['content'][0]['text'], 'MCP api header+symbol')
+response = rpc('tools/call', {'name': 'api', 'arguments': {}})
+check('error' in response, 'MCP api rejects empty arguments')
+response = rpc('tools/call', {'name': 'doc', 'arguments': {'query': 'fixture fixture_symbol', 'stats': True}})
+check('documented operation' in response['result']['content'][0]['text'], 'MCP doc tool')
+check('[sysref]' in response['result']['content'][0]['text'], 'MCP stats footer on doc tool')
+response = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'mpfr_subnormalize', 'source': 'api'}})
+check(signature in response['result']['content'][0]['text'], 'MCP legacy man source=api')
 s = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'demo'}})
 check('SYNOPSIS' in s['result']['content'][0]['text'], 'MCP default man compatibility')
-s = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'mpfr_subnormalize', 'source': 'headers', 'stats': True}})
-check('[sysref]' in s['result']['content'][0]['text'], 'existing opt-in MCP stats retained')
+s = rpc('tools/call', {'name': 'bogus', 'arguments': {'query': 'x'}})
+check('error' in s, 'MCP unknown tool rejected')
 
 # HTTP shares the same handler and retains bearer authentication.
 conf = base / 'sysref.conf'
@@ -189,10 +207,10 @@ try:
             break
         except ConnectionRefusedError:
             time.sleep(.01)
-    req = json.dumps(dict(jsonrpc='2.0', id=2, method='tools/call', params=dict(name='man', arguments=dict(query='mpfr_subnormalize', source='api'))))
+    req = json.dumps(dict(jsonrpc='2.0', id=2, method='tools/call', params=dict(name='api', arguments=dict(symbol='mpfr_subnormalize'))))
     conn.request('POST', '/mcp', req, {'Authorization': 'Bearer fixture-key'})
     response = conn.getresponse()
-    check(response.status == 200 and signature in json.loads(response.read())['result']['content'][0]['text'], 'HTTP API query and existing bearer auth')
+    check(response.status == 200 and signature in json.loads(response.read())['result']['content'][0]['text'], 'HTTP api tool and existing bearer auth')
     conn.close()
 finally:
     server.terminate()

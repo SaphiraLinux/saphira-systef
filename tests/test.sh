@@ -157,12 +157,17 @@ t_contains "bundled garbage decomposes to real opts" "$out" "-x"
 t_contains "bundled garbage has -z" "$out" "-z"
 t_not_contains "bundled garbage has no invented option" "$out" "--frobnicate"
 
-# no additional MCP tools or fields are introduced
+# the MCP surface is exactly three discoverable tools
 mcp_schema=$(printf 'Content-Length: %d\r\n\r\n{"jsonrpc":"2.0","id":9,"method":"tools/list"}' "$(printf '%s' '{"jsonrpc":"2.0","id":9,"method":"tools/list"}' | wc -c)" | "$BIN" --mcp)
-t_contains "only the man tool exists" "$mcp_schema" '"name":"man"'
+t_contains "MCP has man tool" "$mcp_schema" '"name":"man"'
+t_contains "MCP has doc tool" "$mcp_schema" '"name":"doc"'
+t_contains "MCP has api tool" "$mcp_schema" '"name":"api"'
+t_contains "MCP man help text" "$mcp_schema" 'Look up Linux manual pages, commands and options.'
+t_contains "MCP doc help text" "$mcp_schema" 'Find installed package documentation, guides and examples.'
+t_contains "MCP api help text" "$mcp_schema" 'Find C declarations, API contracts and header ownership.'
 t_not_contains "no extra MCP tool introduced" "$mcp_schema" '"name":"sections"'
 t_not_contains "no extra schema field" "$mcp_schema" '"sections"'
-t_contains "schema has source enum" "$mcp_schema" '"source":{"type":"string","enum":["man","doc","headers","api"]}'
+t_contains "man keeps legacy source enum" "$mcp_schema" '"source":{"type":"string","enum":["man","doc","headers","api"]}'
 
 # --- /usr/share/doc source ----------------------------------------------
 out=$(run --source doc bash)
@@ -358,9 +363,12 @@ mcp_json() {
 out=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
 t_contains "initialize server name" "$out" '"name":"sysref"'
 t_contains "initialize protocol echo" "$out" '"protocolVersion":"2025-03-26"'
+t_contains "initialize advertises purpose" "$out" 'Local Linux documentation, manual pages and C API reference.'
 
 out=$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
 t_contains "tools/list has man" "$out" '"name":"man"'
+t_contains "tools/list has doc" "$out" '"name":"doc"'
+t_contains "tools/list has api" "$out" '"name":"api"'
 t_contains "tools/list schema has query" "$out" '"query"'
 
 out=$(mcp_call '{"jsonrpc":"2.0","id":3,"method":"ping"}')

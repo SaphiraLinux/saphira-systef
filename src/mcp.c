@@ -112,7 +112,8 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		json_escape(&r, pv, strlen(pv));
 		gbuf_adds(&r,
 		          ",\"capabilities\":{\"tools\":{\"listChanged\":false}},"
-		          "\"serverInfo\":{\"name\":\"sysref\",\"version\":\"0.1.0\"}}");
+		          "\"serverInfo\":{\"name\":\"sysref\",\"version\":\"0.1.0\"},"
+		          "\"instructions\":\"Local Linux documentation, manual pages and C API reference.\"}");
 		jsonrpc_result(resp, id->raw, id->rawlen, r.p);
 		gbuf_free(&r);
 	} else if (strcmp(m, "ping") == 0) {
@@ -126,6 +127,8 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		jv *q = args ? jv_get(args, "query") : NULL;
 		jv *sec = args ? jv_get(args, "section") : NULL;
 		jv *src = args ? jv_get(args, "source") : NULL;
+		jv *sym = args ? jv_get(args, "symbol") : NULL;
+		jv *hdr = args ? jv_get(args, "header") : NULL;
 		jv *starg = args ? jv_get(args, "stats") : NULL;
 		/* jv: t==1 is bool and the value lives in .b (not .num). A stringified
 		 * boolean is accepted too, because an agent that stringifies its
@@ -137,20 +140,47 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 			         (strcmp(starg->str, "true") == 0 || strcmp(starg->str, "1") == 0))
 				want_stats = 1;
 		}
-		if ((name && (name->t != 3 || strcmp(name->str ? name->str : "", "man") != 0)) ||
-		    !q || !q->str) {
+		if (!name || name->t != 3 || !name->str ||
+		    (strcmp(name->str, "man") != 0 && strcmp(name->str, "doc") != 0 &&
+		     strcmp(name->str, "api") != 0)) {
 			jsonrpc_error(resp, id->raw, id->rawlen, -32602, "invalid tool call arguments");
 			jv_free(root);
 			return 1;
 		}
-		if (strlen(q->str) > MCP_MAX_QUERY_BYTES) {
+		int is_man = strcmp(name->str, "man") == 0;
+		int is_doc = strcmp(name->str, "doc") == 0;
+		/* api merges the old headers/api sources behind one tool: no
+		 * duplicated implementation, the query is composed here and the
+		 * shared sysref_api answers it. At least one of symbol/header. */
+		char apiq[MCP_MAX_QUERY_BYTES + 1];
+		apiq[0] = 0;
+		if (!is_man && !is_doc) {
+			const char *s = (sym && sym->str) ? sym->str : NULL;
+			const char *h = (hdr && hdr->str) ? hdr->str : NULL;
+			if ((!s || !s[0]) && (!h || !h[0])) {
+				jsonrpc_error(resp, id->raw, id->rawlen, -32602, "invalid tool call arguments");
+				jv_free(root);
+				return 1;
+			}
+			if (h && h[0] && s && s[0]) snprintf(apiq, sizeof apiq, "%s %s", h, s);
+			else if (s && s[0]) snprintf(apiq, sizeof apiq, "%s", s);
+			else snprintf(apiq, sizeof apiq, "%s", h);
+		} else if (!q || !q->str) {
+			jsonrpc_error(resp, id->raw, id->rawlen, -32602, "invalid tool call arguments");
+			jv_free(root);
+			return 1;
+		}
+		const char *qq = (!is_man && !is_doc) ? apiq : q->str;
+		if (strlen(qq) > MCP_MAX_QUERY_BYTES) {
 			jsonrpc_error(resp, id->raw, id->rawlen, -32602, "query too large");
 			jv_free(root);
 			return 1;
 		}
 		result res;
 		memset(&res, 0, sizeof res);
-		sysref_run(q->str, (sec && sec->str) ? sec->str : NULL,
+		if (!is_man && !is_doc) sysref_api(apiq, 1, &res);
+		else if (is_doc) sysref_run(q->str, NULL, "doc", &res);
+		else sysref_run(q->str, (sec && sec->str) ? sec->str : NULL,
 		           (src && src->str) ? src->str : NULL, &res);
 		/* Opt-in metrics footer. Default output is untouched, so the common
 		 * case pays nothing for this. The point is that an agent can hold
@@ -173,7 +203,7 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 			else if (src && src->str && src->str[0])
 				snprintf(who, sizeof who, "%s", src->str);
 			else
-				snprintf(who, sizeof who, "result");
+				snprintf(who, sizeof who, "%s", name->str);
 			/* full_bytes is only measured on the man and headers paths. The
 			 * doc bare-package path legitimately has no single source body, so
 			 * it leaves full_bytes at 0. Printing "reduction=0.0%" there would

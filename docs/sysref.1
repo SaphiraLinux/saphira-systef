@@ -150,14 +150,13 @@ under
 .IR /usr/share/doc ", " /usr/share/info ", and " /usr/share/man
 (SYSREF_DOC_PATH override) with same-package/version excerpts preferred.
 Only quoted local text is evidence; argument descriptions, returns,
-preconditions, side effects, errors and examples not stated there are
-unavailable. Preprocessor branches are retained, never evaluated as active
+preconditions, side effects, errors and sample invocations not stated there
+are unavailable. Preprocessor branches are retained, never evaluated as active
 configuration. Package ownership is reported from local metadata only; no
 installation is performed and no package is inferred.
 .PP
 A bare-symbol query needs no filename: every configured include root is
-searched (for example
-.BR "sysref --source api mpfr_subnormalize" ).
+searched.
 The reply is a lifecycle block: SYMBOL, declaration SOURCE with file and
 line, HEADER with file and line, PACKAGE owner/version from local metadata
 (or unknown), verbatim DOCUMENT excerpts with Info/HTML/compressed manuals
@@ -172,18 +171,35 @@ scope: headers and manuals describe the API contract, not the algorithm.
 .SH MCP
 In MCP mode
 .B sysref
-uses the Model Context Protocol over stdio and exposes exactly one tool:
+uses the Model Context Protocol over stdio and exposes exactly three tools.
+The server identifies as
+.B sysref
+and advertises its purpose on initialize as local Linux documentation,
+manual pages and C API reference.
 .PP
-.B  man(query, section?, source?)
-.PP
-with
-.B query
-required and
+.B  man(query, section?)
+.RS
+Look up Linux manual pages, commands and options.
 .B section
-and
+selects a man section or named section heading.
 .B source
-optional.  Source accepts
-.BR man ", " doc ", " headers ", or " api .
+is legacy: it accepts
+.BR man ", " doc ", " headers ", or " api
+for compatibility, but new agents use the dedicated tools below.
+.RE
+.PP
+.B  doc(query)
+.RS
+Find installed package documentation, guides and examples.
+.RE
+.PP
+.B  api(symbol?, header?)
+.RS
+Find C declarations, API contracts and header ownership. Either argument
+suffices: a bare symbol searches every configured include root, a bare
+header reports its availability, and both together scope the lookup.
+.RE
+.PP
 Roughly 95% or more of the full page bytes is removed per call: results are
 small declaration blocks, sections, or option entries instead of complete
 pages.
