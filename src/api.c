@@ -29,9 +29,21 @@ typedef struct {
   char first[PATH_MAX];
   int first_line;
   /* Header's own parenthesized form and a documented signature line, both
-   * captured verbatim for the PARAMETERS comparison. No parsing of types. */
+   * captured verbatim for the PARAMETERS comparison. No type knowledge. */
   char declparams[512];
   char docform[512];
+  /* First-match declaration kind: 0 undecided, 1 function, 2 function-like
+   * macro, 3 object-like macro. Keyword flags record only words literally
+   * present in the declaration. */
+  int kind, k_static, k_inline, k_extern;
+  /* Innermost preprocessor guards enclosing the first match, verbatim. */
+  char curguard[3][96];
+  int ncurguard;
+  char guard[300];
+  /* Whitespace-normalized hashes of emitted excerpts: exact duplicates
+   * across files add no information and are skipped, not counted. */
+  unsigned long seen[32];
+  int nseen;
 } search;
 static int ident(int c) { return isalnum((unsigned char)c) || c == '_'; }
 static int symbol_ok(const char *s) {
@@ -126,7 +138,40 @@ static void declaration(search *s, const char *path, const char *raw, const char
  while (a<b && isspace((unsigned char)m[a])) { if (m[a]=='\n') ln++; a++; }
  if (a==b || !declares(m+a,b-a,s->symbol,macro)) return;
   s->matches++;
-  if (!s->first[0]) { snprintf(s->first,sizeof s->first,"%s",path); s->first_line=ln; }
+  if (!s->first[0]) {
+   snprintf(s->first,sizeof s->first,"%s",path); s->first_line=ln;
+   if (macro) {
+    size_t k=a;
+    while (k<b && (isspace((unsigned char)m[k])||m[k]=='#')) k++;
+    k+=6; /* "define" verified by declares() */
+    while (k<b && isspace((unsigned char)m[k])) k++;
+    while (k<b && ident(m[k])) k++;
+    s->kind = (k<b && m[k]=='(') ? 2 : 3;
+   } else {
+    int has_paren=0;
+    for (size_t k=a;k<b;k++) if (m[k]=='(') { has_paren=1; break; }
+    int typelike = word(m+a,b-a,"typedef") || word(m+a,b-a,"struct") ||
+                   word(m+a,b-a,"enum") || word(m+a,b-a,"union");
+    int fnptr = 0;
+    for (size_t k=a;k+1<b;k++) if (m[k]=='(' && m[k+1]=='*') { fnptr=1; break; }
+    if (has_paren && !typelike && !fnptr) {
+     s->kind=1;
+     s->k_static=word(m+a,b-a,"static");
+     s->k_inline=word(m+a,b-a,"inline");
+     s->k_extern=word(m+a,b-a,"extern");
+    }
+   }
+   if (s->ncurguard>0) {
+    size_t pos=0;
+    for (int g=0;g<s->ncurguard && g<3 && pos<sizeof s->guard-4;g++) {
+     if (g) { memcpy(s->guard+pos," / ",3); pos+=3; }
+     size_t l=strlen(s->curguard[g]);
+     if (pos+l>sizeof s->guard-1) l=sizeof s->guard-1-pos;
+     memcpy(s->guard+pos,s->curguard[g],l); pos+=l;
+    }
+    s->guard[pos]=0;
+   }
+  }
   if (!s->declparams[0]) {
    /* First parenthesized group in the masked span: comments and literals
     * are already blanked there, so this is lexical bracket matching on
@@ -154,10 +199,43 @@ static void header(search *s, const char *path) {
  size_t start=0; int ln=1,begin=1,par=0,brace=0,bol=1;
  for (size_t i=0;i<b.len;i++) {
   char c=m[i];
-  if (bol && c=='#') {
-   size_t end=i;
-   do { while(end<b.len && m[end]!='\n') end++; if (end==b.len || end==0 || m[end-1]!='\\') break; end++; } while(end<b.len);
-   declaration(s,path,b.p,m,i,end,ln,1);
+   if (bol && c=='#') {
+    size_t end=i;
+    do { while(end<b.len && m[end]!='\n') end++; if (end==b.len || end==0 || m[end-1]!='\\') break; end++; } while(end<b.len);
+    { /* Track conditional nesting for GUARDED BY: directive word plus the
+       * condition's own text, whitespace-collapsed, never evaluated. */
+     size_t d=i+1; while (d<end && isspace((unsigned char)m[d])) d++;
+     size_t w=d; while (w<end && isalpha((unsigned char)m[w])) w++;
+     size_t wl=w-d;
+     if ((wl==2 && !memcmp(m+d,"if",2)) || (wl==5 && !memcmp(m+d,"ifdef",5)) ||
+         (wl==6 && !memcmp(m+d,"ifndef",6))) {
+      if (s->ncurguard<3) {
+       char *g=s->curguard[s->ncurguard]; size_t pos=0;
+       int ran=0;
+       for (size_t k=i;k<end && pos<92;k++) {
+        if (m[k]=='\\' && k+1<end && m[k+1]=='\n') { k++; continue; }
+        if (isspace((unsigned char)m[k])) { if (!ran) { g[pos++]=' '; ran=1; } }
+        else { g[pos++]=m[k]; ran=0; }
+       }
+       while (pos>0 && g[pos-1]==' ') pos--;
+       g[pos]=0;
+       if (pos>0) s->ncurguard++;
+      }
+     } else if (wl==5 && !memcmp(m+d,"endif",5)) {
+      if (s->ncurguard>0) s->ncurguard--;
+     } else if (wl==6 && !memcmp(m+d,"define",6)) {
+      /* An include guard opened and immediately defined (#ifndef X just
+       * above #define X) is boilerplate, not a configuration condition. */
+      size_t k=d+6; while (k<end && isspace((unsigned char)m[k])) k++;
+      size_t n0=k; while (k<end && ident(m[k])) k++;
+      if (k>n0 && s->ncurguard>0) {
+       char *top=s->curguard[s->ncurguard-1];
+       size_t tn=strlen(top);
+       if (tn==8+(k-n0) && !memcmp(top+8,m+n0,k-n0)) s->ncurguard--;
+      }
+     }
+    }
+    declaration(s,path,b.p,m,i,end,ln,1);
    for(size_t k=i;k<end;k++) if(m[k]=='\n') ln++;
    i=end; if(i<b.len) ln++; start=i+1; begin=ln; bol=1; continue;
   }
@@ -197,6 +275,7 @@ static void header_visit(search *s,const char *path) {
 static int same_owner(const char *header, const char *doc);
 static int is_html(const char *path);
 static void excerpt_add(gbuf *out, const char *p, size_t n, int html);
+static unsigned long excerpt_hash(const char *p, size_t n);
 static void docs_visit(search *s,const char *path) {
  const char *name=strrchr(path,'/'); name=name?name+1:path;
  /* Man trees contain thousands of compressed files: function-name pages
@@ -215,19 +294,27 @@ static void docs_visit(search *s,const char *path) {
    int matched_owner=same_owner(s->first,path);
    if(s->docpass==0) s->candidates++;
    if ((s->docpass==0 && !matched_owner) || (s->docpass==1 && matched_owner)) break;
-   s->docs++;
-   if(s->docs<=3 && s->res->text.len<REPLY_LIMIT) {
-    ref(&s->res->text,"DOCUMENT: ",path,ln);
-    gbuf_adds(&s->res->text,matched_owner
-     ? "LOCAL EXCERPT (verbatim; same installed package/version as header):\n"
-     : "LOCAL EXCERPT (verbatim; applicability/version not established):\n");
     size_t stop=end; int lines=0;
     while(stop<b.len && stop-i<1100 && lines<12) {
      if(b.p[stop++]=='\n') { lines++; if(stop<b.len && b.p[stop]=='\n') break; }
     }
     if(stop-i>1200) stop=end;
-    if(stop-i<=1500) excerpt_add(&s->res->text,b.p+i,stop-i,is_html(path));
-    else gbuf_adds(&s->res->text,"Matching line exceeds excerpt budget; inspect source.\n");
+    { /* Exact-duplicate excerpts add no information: keep the first
+       * occurrence, skip repeats without counting them. */
+     unsigned long h=excerpt_hash(b.p+i, stop-i);
+     int dup=0;
+     for (int d=0;d<s->nseen;d++) if (s->seen[d]==h) { dup=1; break; }
+     if (dup) break;
+     if (s->nseen<32) s->seen[s->nseen++]=h;
+    }
+    s->docs++;
+    if(s->docs<=3 && s->res->text.len<REPLY_LIMIT) {
+     ref(&s->res->text,"DOCUMENT: ",path,ln);
+     gbuf_adds(&s->res->text,matched_owner
+      ? "LOCAL EXCERPT (verbatim; same installed package/version as header):\n"
+      : "LOCAL EXCERPT (verbatim; applicability/version not established):\n");
+     if(stop-i<=1500) excerpt_add(&s->res->text,b.p+i,stop-i,is_html(path));
+     else gbuf_adds(&s->res->text,"Matching line exceeds excerpt budget; inspect source.\n");
     if (!s->docform[0]) {
      /* Documented signature: the symbol word followed by a parenthesized
       * list inside the quoted excerpt (e.g. a texinfo Function line).
@@ -325,6 +412,16 @@ static int same_owner(const char *header,const char *doc) {
 static int is_html(const char *path) {
  const char *e=strrchr(path,'.');
  return e && (!strcmp(e,".html") || !strcmp(e,".htm"));
+}
+/* Whitespace-insensitive excerpt hash for exact-duplicate suppression. */
+static unsigned long excerpt_hash(const char *p, size_t n) {
+ unsigned long h=5381;
+ for (size_t i=0;i<n;i++) {
+  unsigned char c=p[i];
+  if (isspace(c)) continue;
+  h=((h<<5)+h)+c;
+ }
+ return h;
 }
 static void excerpt_add(gbuf *out, const char *p, size_t n, int html) {
  if(!html) { gbuf_addn(out,p,n); return; }
@@ -484,6 +581,22 @@ int sysref_api(const char *query, int semantics, result *res) {
  if(named && !exists) { gbuf_adds(&res->text,"Missing header: "); gbuf_adds(&res->text,first); gbuf_addch(&res->text,'\n'); res->status=1; }
   if(s.matches>MATCH_LIMIT || res->text.len>REPLY_LIMIT) gbuf_adds(&res->text,"More definitions found; narrow with a header name.\n");
   if(s.matches) gbuf_adds(&res->text,"Source declarations only; preprocessor branches retained, active configuration not evaluated.\n");
+  if (s.matches && s.kind==2) gbuf_adds(&res->text,"KIND: function-like macro; arguments may evaluate more than once; its address cannot be taken.\n");
+  else if (s.matches && s.kind==3) gbuf_adds(&res->text,"KIND: object-like macro; not a function; its address cannot be taken.\n");
+  else if (s.matches && s.kind==1) {
+   gbuf_adds(&res->text,"KIND: function declaration");
+   if (s.k_static || s.k_inline || s.k_extern) {
+    gbuf_adds(&res->text," (declared");
+    if (s.k_static) gbuf_adds(&res->text," static");
+    if (s.k_inline) gbuf_adds(&res->text," inline");
+    if (s.k_extern) gbuf_adds(&res->text," extern");
+    gbuf_adds(&res->text," in header)");
+   }
+   gbuf_addch(&res->text,'\n');
+  }
+  if (s.matches && s.guard[0]) {
+   gbuf_adds(&res->text,"GUARDED BY: "); gbuf_adds(&res->text,s.guard); gbuf_addch(&res->text,'\n');
+  }
   /* Declared location and owning package first: the agent sees what was
    * found and where before the longer documentation excerpts. */
   if(semantics && s.matches) {
@@ -535,7 +648,8 @@ int sysref_api(const char *query, int semantics, result *res) {
     gbuf_adds(&res->text,"\nDevelopment declaration unavailable in searched headers; runtime library is installed.\n");
    }
   }
-  packages(&s,m);
+   packages(&s,m);
+   if (res->status) gbuf_adds(&res->text,"Not a C declaration? For commands use the man tool; for package docs the doc tool (--source doc).\n");
   if(semantics && !s.docs && symbol_ok(sym)) {
    char docpath[PATH_MAX];
    const char *suffix[]={".3",".3.gz",NULL};

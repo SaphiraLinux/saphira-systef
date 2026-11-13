@@ -267,6 +267,51 @@ static int man_probe_gnu(void) {
 	return man_gnu;
 }
 
+/* List every manual section providing NAME, via one native `man -w`
+ * call with no section selector. Paths are parsed for their /man<N>/
+ * component and never opened. Returns the distinct section count. */
+static int man_sections(const char *name, char *out, size_t n) {
+	if (!safe_relative_path(name, 1)) return 0;
+	char *av[] = {"man", "-w", (char *)name, NULL};
+	char *o = NULL;
+	size_t ol;
+	int st;
+	if (run_cmd(av, &o, &ol, &st) < 0 || st != 0 || !o) return 0;
+	char secs[8][8];
+	int nsec = 0;
+	for (size_t i = 0; i < ol && nsec < 8;) {
+		size_t e = i;
+		while (e < ol && o[e] != '\n' && o[e] != ' ' && o[e] != '\t') e++;
+		const char *m = NULL;
+		for (size_t k = i; k + 4 < e; k++)
+			if (o[k] == '/' && o[k+1] == 'm' && o[k+2] == 'a' && o[k+3] == 'n') { m = o + k + 4; break; }
+		if (m) {
+			char sec[8];
+			size_t l = 0;
+			while (m + l < o + e && l < sizeof sec - 1 &&
+			       (isdigit((unsigned char)m[l]) || isalpha((unsigned char)m[l]))) l++;
+			if (l >= 1 && l <= 3 && isdigit((unsigned char)m[0]) && (m + l >= o + e || m[l] == '/')) {
+				memcpy(sec, m, l); sec[l] = 0;
+				int dup = 0;
+				for (int s = 0; s < nsec; s++) if (strcmp(secs[s], sec) == 0) { dup = 1; break; }
+				if (!dup) { strcpy(secs[nsec], sec); nsec++; }
+			}
+		}
+		i = e + 1;
+	}
+	free(o);
+	if (nsec == 0) return 0;
+	size_t pos = 0;
+	for (int s = 0; s < nsec && pos < n; s++) {
+		if (s) { if (pos + 2 >= n) break; out[pos++] = ','; out[pos++] = ' '; }
+		size_t l = strlen(secs[s]);
+		if (pos + l >= n) break;
+		memcpy(out + pos, secs[s], l); pos += l;
+	}
+	if (pos < n) out[pos] = 0; else if (n) out[n-1] = 0;
+	return nsec;
+}
+
 static int try_man_w(const char *sec, const char *cand, resolved_page *r) {
 	if (!safe_relative_path(cand, 1)) return 0;
 	char *av[8];
@@ -1308,6 +1353,7 @@ static int sysref_run_doc(const char *query, result *res) {
 		gbuf_adds(&res->text, "no local doc match for \"");
 		gbuf_adds(&res->text, query);
 		gbuf_adds(&res->text, "\"\n");
+		gbuf_adds(&res->text, "Not package docs? For commands use the man tool; for C symbols the api tool (--source api).\n");
 		res->status = 1;
 		return 1;
 	}
@@ -1328,6 +1374,7 @@ static int sysref_run_doc(const char *query, result *res) {
 		gbuf_adds(&res->text, "no local doc match for \"");
 		gbuf_adds(&res->text, query);
 		gbuf_adds(&res->text, "\"\n");
+		gbuf_adds(&res->text, "Not package docs? For commands use the man tool; for C symbols the api tool (--source api).\n");
 		res->status = 1;
 		toks_free(&t);
 		return 1;
@@ -1354,6 +1401,7 @@ static int sysref_run_doc(const char *query, result *res) {
 		gbuf_adds(&res->text, "no local doc match for \"");
 		gbuf_adds(&res->text, query);
 		gbuf_adds(&res->text, "\"\n");
+		gbuf_adds(&res->text, "Not package docs? For commands use the man tool; for C symbols the api tool (--source api).\n");
 		res->status = 1;
 		toks_free(&t);
 		return 1;
@@ -1488,6 +1536,7 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 		gbuf_adds(&res->text, "no local man match for \"");
 		gbuf_adds(&res->text, query);
 		gbuf_adds(&res->text, "\"\n");
+		gbuf_adds(&res->text, "Not a command? For C symbols use the api tool (--source api); for package docs the doc tool (--source doc).\n");
 		res->status = 1;
 		return 1;
 	}
@@ -1498,6 +1547,7 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 		gbuf_adds(&res->text, "no local man match for \"");
 		gbuf_adds(&res->text, query);
 		gbuf_adds(&res->text, "\"\n");
+		gbuf_adds(&res->text, "Not a command? For C symbols use the api tool (--source api); for package docs the doc tool (--source doc).\n");
 		res->status = 1;
 		gbuf_free(&page);
 		toks_free(&allt);
@@ -1599,6 +1649,7 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 		emit_sections_line(&res->text, ls, heads, nh);
 		/* option-looking query: suggest real nearby option names only */
 		if (nop > 0) emit_nearest_options(&res->text, ls, n, heads, nh, opts[0]);
+		gbuf_adds(&res->text, "Not a command? For C symbols use the api tool (--source api); for package docs the doc tool (--source doc).\n");
 		res->status = 2;
 	} else {
 		gbuf_adds(&res->text, rp.name);
@@ -1611,6 +1662,16 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 			size_t ub = range_bytes(ls, rr);
 			if (res->text.len <= OUTPUT_BUDGET_BYTES && ub <= OUTPUT_BUDGET_BYTES - res->text.len)
 				emit_range(&res->text, ls, rr.a, rr.b);
+		}
+		/* The served section was man's default choice, not the agent's:
+		 * name the alternatives so nothing is silently decided. */
+		if ((!section || !section[0]) && rp.name[0]) {
+			char secs[64];
+			if (man_sections(rp.name, secs, sizeof secs) > 1) {
+				gbuf_adds(&res->text, "Also manual sections: ");
+				gbuf_adds(&res->text, secs);
+				gbuf_adds(&res->text, ". Narrow with -s N.\n");
+			}
 		}
 	}
 

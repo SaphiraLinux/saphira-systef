@@ -188,6 +188,7 @@ t_contains "doc multi-term visudo" "$out" "visudo"
 out=$(run --source doc "definitely_no_such_pkg_zzz")
 t "doc missing package exit 1" "$?" "1" "1"
 t_contains "doc missing message" "$out" "no local doc match"
+t_contains "doc miss hints at man and api" "$out" "For commands use the man tool"
 
 out=$(run --source doc "bash zzzzz_nothere")
 t "doc no term match exit 0" "$?" "0" "0"
@@ -226,6 +227,7 @@ t_contains "headers bare include" "$out" "SOURCE: /usr/include/stdio.h:"
 out=$(run --source headers "no_such_header_zzz x")
 t "headers missing header exit 1" "$?" "1" "1"
 t_contains "headers missing header message" "$out" "Missing header"
+t_contains "headers miss hints at man and doc" "$out" "Not a C declaration?"
 
 out=$(run --source headers "stdio.h zzz_nothere")
 t "headers no symbol match exit 1" "$?" "1" "1"
@@ -249,6 +251,7 @@ t_not_contains "punctuation brackets kept" "$out" "up down"  # { } must survive
 out=$(run "definitely_no_such_page_zzz")
 t "missing page exit 1" "$?" "1" "1"
 t_contains "missing page message" "$out" "no local man match"
+t_contains "man miss hints at api and doc" "$out" "use the api tool"
 
 out=$(run "")
 t "empty query exit 1" "$?" "1" "1"

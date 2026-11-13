@@ -73,9 +73,13 @@ check('Missing header' in run('headers', 'escape.h', 'root', expected=1), 'symli
                               '#if WIDGET_V2\nint widget_mode(int);\n#else\nint widget_mode(long);\n#endif\n'
                               'typedef struct widget_state { int fd; } widget_state;\n'
                               'enum widget_colour { WIDGET_RED, WIDGET_BLUE };\n'
-                              '#define WIDGET_CLAMP(x) \\\n ((x) < 0 ? 0 : (x))\n'
-                              'int widget_use(widget_state *p);\n'
-                              '#endif\n')
+                               '#define WIDGET_CLAMP(x) \\\n ((x) < 0 ? 0 : (x))\n'
+                               '#define WIDGET_VERSION 2\n'
+                               'int widget_use(widget_state *p);\n'
+                               '#endif\n')
+(inc / 'guard.h').write_text('#ifndef GUARD_H\n#define GUARD_H\n'
+                             '#ifdef __USE_GUARD\nint guarded_open(int fd);\n#endif\n'
+                             '#endif\n')
 s = run('headers', 'widget_open')
 check('widget.h:3' in s and 'extern int\nwidget_open(\n int fd,\n int flags\n);' in s, 'neutral multiline function')
 check(run('headers', 'widget_mode').count('SOURCE:') == 2, 'neutral conditional variants retained')
@@ -87,6 +91,14 @@ check('((x) < 0 ? 0 : (x))' in s and 'widget_use' not in s, 'neutral multiline m
 check(run('headers', 'widget_state').count('SOURCE:') == 1, 'neutral parameter type use excluded')
 s = run('headers', 'widget.h', 'widget_open')
 check('widget.h:3' in s and 'widget_open' in s, 'neutral header+symbol query')
+s = run('api', 'widget.h', 'widget_open')
+check('KIND: function declaration (declared extern in header)' in s, 'function kind with linkage keyword')
+s = run('api', 'WIDGET_CLAMP')
+check('KIND: function-like macro' in s and 'cannot be taken' in s, 'function-like macro kind')
+s = run('api', 'WIDGET_VERSION')
+check('KIND: object-like macro' in s, 'object-like macro kind')
+s = run('api', 'guard.h', 'guarded_open')
+check('GUARDED BY: #ifdef __USE_GUARD' in s, 'conditional guard quoted verbatim')
 
 (docs / 'mpfr-4.2').mkdir()
 (docs / 'mpfr-4.2' / 'api.md').write_text('# mpfr_subnormalize\nint mpfr_subnormalize (mpfr_t X, int T, mpfr_rnd_t RND)\nArguments: x is rounded.\nReturn: documented ternary result.\n\nUnrelated text.\n')
@@ -155,12 +167,35 @@ check('same installed package/version' in run('api', 'mpfr_subnormalize'), 'vers
 check('PARAMETERS: header and documented forms agree.' in run('api', 'widget.h', 'widget_open'), 'parameters agree when doc quotes header form')
 (docs / 'widget-doc.txt').unlink()
 
+# Exact-duplicate excerpts add no information: only the first is quoted.
+(docs / 'dup-a.txt').write_text('dupe_sym has a duplicated fixture contract.\n')
+(docs / 'dup-b.txt').write_text('dupe_sym has a duplicated fixture contract.\n')
+s = run('api', 'dupe_sym', expected=1)
+check(s.count('DOCUMENT: ') == 1, 'duplicate excerpts deduplicated')
+check('DOCUMENTATION: 1 local excerpt' in s, 'excerpt count reflects deduplication')
+(docs / 'dup-a.txt').unlink()
+(docs / 'dup-b.txt').unlink()
+
+# Cross-hints route a wrong-verb guess to the right tool.
+s = run('man', 'zzz_no_such_page_ever', expected=1)
+check('use the api tool' in s and 'doc tool' in s, 'man miss hints at api and doc')
+s = run('doc', 'definitely_no_such_pkg_zzz', expected=1)
+check('man tool' in s and 'api tool' in s, 'doc miss hints at man and api')
+s = run('api', 'zzz_nothere_symbol_at_all', expected=1)
+check('man tool' in s and 'doc tool' in s, 'api miss hints at man and doc')
+
 # Existing man source still uses native discovery and rendering.
-(helpers / 'man').write_text('#!/bin/sh\ncase "$*" in\n*"-w"*) echo "'+str(base / 'demo.1')+'";;\n*) printf "DEMO(1)\\n\\nNAME\\n demo - fixture\\n\\nSYNOPSIS\\n demo [OPTION]\\n\\nDESCRIPTION\\n Local fixture description.\\n";;\nesac\n')
+(helpers / 'man').write_text('#!/bin/sh\ncase "$*" in\n*zzz_no_such_page_ever*) exit 1;;\n*"-w"*dualsec*|*dualsec*"-w"*) echo "'+str(base / 'man1/dualsec.1')+'"; echo "'+str(base / 'man3/dualsec.3')+'";;\n*"-w"*) echo "'+str(base / 'demo.1')+'";;\n*) printf "DEMO(1)\\n\\nNAME\\n demo - fixture\\n\\nSYNOPSIS\\n demo [OPTION]\\n\\nDESCRIPTION\\n Local fixture description.\\n";;\nesac\n')
 (helpers / 'man').chmod(0o755)
 (base / 'demo.1').write_text('.TH DEMO 1\n')
+(base / 'man1').mkdir()
+(base / 'man3').mkdir()
+(base / 'man1' / 'dualsec.1').write_text('.TH DUALSEC 1\n')
+(base / 'man3' / 'dualsec.3').write_text('.TH DUALSEC 3\n')
 s = run('man', 'demo')
 check('SYNOPSIS' in s and 'demo' in s, 'existing native man query')
+s = run('man', 'dualsec')
+check('Also manual sections: 1, 3' in s, 'multi-section serving discloses the choice')
 
 # Three discoverable MCP tools sharing one handler, framed and newline transports.
 def rpc(method, params=None, framed=False):

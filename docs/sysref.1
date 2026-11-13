@@ -106,10 +106,13 @@ is treated as a named section heading (for example
 A bare command query returns the SYNOPSIS plus a one-line
 SECTIONS map (for example
 .B "SECTIONS: NAME | SYNOPSIS | ..."
-) for progressive disclosure.  A query matching nothing returns the available
+) for progressive disclosure.  When no section is selected and the name
+exists in several manual sections, the reply names the others so the
+default choice stays visible.  A query matching nothing returns the available
 headings; option-like queries (starting with
 .B \- )
-additionally list the nearest real option names.
+additionally list the nearest real option names.  A miss in any source
+names the other tools to try next.
 .SH SOURCES
 Four documentation sources are available; each is selected explicitly with
 .B \-\-source
@@ -164,7 +167,11 @@ included and HTML tags stripped, then DOCUMENTATION availability,
 ARGUMENTS availability, STATUS, and a Detailed-local-manual line that is
 explicit when no manual exists. A signature alone never establishes argument
 meaning; when documentation is unavailable the agent is told so rather than
-left to infer from types. Where a quoted manual states a documented
+left to infer from types. The declaration's kind is stated plainly:
+function-like and object-like macros (which have no address to take),
+plain functions, and any static/inline/extern keywords literally present.
+Enclosing conditional-compilation guards are quoted verbatim where present,
+never evaluated. Where a quoted manual states a documented
 signature for the symbol, its parameter list is compared with the header's
 own form position by position (PARAMETERS), so names present only in the
 manual are distinguished from the header text without inventing any.
