@@ -37,6 +37,20 @@ static int excerpt_rank(const void *a, const void *b) {
  { int c=strcmp(x->path,y->path); if (c) return c; }
  return x->ln - y->ln;
 }
+/* Best-match verdict, or NULL. Named only when the lead excerpt is a
+ * uniquely close family co-mention: top hit carries code context and a
+ * sibling next to the symbol, strictly closer than any runner-up. Anything
+ * less stays silent (today's behavior), so the tool never bluffs. */
+static sysref_excerpt *verdict_pick(const char *verb, sysref_excerpt *docs, int ndocs) {
+ if (strcmp(verb, "api") != 0 || ndocs < 1) return NULL;
+ sysref_excerpt *top = &docs[0];
+ if (!top->code || top->prox < 0) return NULL;
+ if (ndocs > 1) {
+  sysref_excerpt *next = &docs[1];
+  if (next->prox >= 0 && next->prox <= top->prox) return NULL;
+ }
+ return top;
+}
 
 typedef struct {
  const char *symbol;
@@ -590,6 +604,63 @@ static int mentions_feature_test(const char *g) {
  for (int i=0;words[i];i++) if (strstr(g,words[i])) return 1;
   return 0;
 }
+/* Concrete feature-test requirement read off a guard, or 0. Only the
+ * simple whole-condition forms qualify: `ifdef MACRO`, `ifndef MACRO`,
+ * `if defined(MACRO)`, `if !defined(MACRO)` with MACRO in the
+ * feature-test vocabulary above. Anything compound or nested stays a
+ * quoted guard plus the manual pointer, because turning an arbitrary
+ * expression into a requirement would be inference, not lookup. */
+static int guard_requirement(const char *g, char *mac, size_t macsz, int *neg) {
+ if (strstr(g, " / ")) return 0; /* nested guards: not simple */
+ const char *h = g;
+ if (h[0] == '#') h++;
+ const char *p = NULL;
+ int n = 0;
+ if (!strncmp(h, "ifdef ", 6)) { p = h + 6; n = 0; }
+ else if (!strncmp(h, "ifndef ", 7)) { p = h + 7; n = 1; }
+ else if (!strncmp(h, "if defined(", 11) && h[strlen(h) - 1] == ')') { p = h + 11; n = 0; }
+ else if (!strncmp(h, "if !defined(", 12) && h[strlen(h) - 1] == ')') { p = h + 12; n = 1; }
+ else return 0;
+ size_t ml = strlen(h) - (size_t)(p - h);
+ if (p != h + 6 && p != h + 7) {
+  if (ml == 0) return 0;
+  ml--; /* trailing ')' */
+ }
+ if (ml == 0 || ml + 1 > macsz) return 0;
+ for (size_t i = 0; i < ml; i++)
+  if (!isalnum((unsigned char)p[i]) && p[i] != '_') return 0;
+ memcpy(mac, p, ml);
+ mac[ml] = 0;
+ if (!mentions_feature_test(mac)) return 0;
+ *neg = n;
+ return 1;
+}
+/* Concrete requirement line, or the honest manual pointer, or nothing.
+ * Shared by the text, markdown and json renderers so the three formats
+ * cannot disagree. Returns 1 when a line was emitted. */
+static int requirement_line(gbuf *o, const char *guard) {
+ char mac[96];
+ int neg = 0;
+ if (guard_requirement(guard, mac, sizeof mac, &neg)) {
+  if (!neg) {
+   gbuf_adds(o, "Requires ");
+   gbuf_adds(o, mac);
+   gbuf_adds(o, ": define it before any header (e.g. -D");
+   gbuf_adds(o, mac);
+   gbuf_adds(o, "); see feature_test_macros(7).\n");
+  } else {
+   gbuf_adds(o, "Unavailable when ");
+   gbuf_adds(o, mac);
+   gbuf_adds(o, " is defined; see feature_test_macros(7).\n");
+  }
+  return 1;
+ }
+ if (mentions_feature_test(guard)) {
+  gbuf_adds(o, "Possible feature-test requirement: see feature_test_macros(7); guards above are quoted, not evaluated.\n");
+  return 1;
+ }
+ return 0;
+}
 static void excerpt_add(gbuf *out, const char *p, size_t n, int html) {
  if(!html) { gbuf_addn(out,p,n); return; }
  int tag=0; for(size_t i=0;i<n;i++) {
@@ -777,8 +848,7 @@ int sysref_api(const char *query, int semantics, int page, int per_page, int for
   }
    if (s.matches && s.guard[0]) {
     gbuf_adds(&res->text,"GUARDED BY: "); gbuf_adds(&res->text,s.guard); gbuf_addch(&res->text,'\n');
-    if (mentions_feature_test(s.guard))
-     gbuf_adds(&res->text,"Possible feature-test requirement: see feature_test_macros(7); guards above are quoted, not evaluated.\n");
+    requirement_line(&res->text, s.guard);
    }
    /* Declared location and owning package first: the agent sees what was
     * found and where before the longer documentation excerpts. Ownership
@@ -830,10 +900,17 @@ int sysref_api(const char *query, int semantics, int page, int per_page, int for
    }
     if(s.docs > s.page*s.ppsize) { char mb[256]; snprintf(mb, sizeof mb, "Additional documentation matches on later pages; use page=%d for more. For full package context use source=doc with the named package.\n", s.page+1); gbuf_adds(&res->text, mb); }
     else if(s.docs>s.ppsize) gbuf_adds(&res->text,"Additional documentation matches omitted; use source=doc with the named package for more context.\n");
-   /* Ranked emission: one ordering feeds excerpts and lookahead. The window
-    * quotes the current page in rank order; lead paths name the first file
-    * of each later page so the agent can jump instead of paging linearly. */
+/* Ranked emission: one ordering feeds excerpts and lookahead. The window
+ * quotes the current page in rank order; lead paths name the first file
+ * of each later page so the agent can jump instead of paging linearly. */
    if (s.nrank > 1) qsort(s.rank, (size_t)s.nrank, sizeof *s.rank, excerpt_rank);
+   { sysref_excerpt *vd = verdict_pick(res->verb, s.rank, s.nrank);
+     if (vd) {
+      gbuf_adds(&res->text, "Best match: ");
+      gbuf_adds(&res->text, vd->path);
+      gbuf_addch(&res->text, '\n');
+     }
+   }
    int quoted = 0;
    { int w0=(s.page-1)*s.ppsize, w1=w0+s.ppsize;
      if (w0 < s.nrank) {
@@ -1006,8 +1083,7 @@ static void render_api_md(result *res, gbuf *o) {
 		gbuf_adds(o, "GUARDED BY: ");
 		gbuf_adds(o, res->guard);
 		gbuf_addch(o, '\n');
-		if (mentions_feature_test(res->guard))
-			gbuf_adds(o, "Possible feature-test requirement: see feature_test_macros(7); guards above are quoted, not evaluated.\n");
+		requirement_line(o, res->guard);
 	}
 	if (!strcmp(res->verb, "api") && res->matches > 0) {
 		char hl[32];
@@ -1028,6 +1104,13 @@ static void render_api_md(result *res, gbuf *o) {
 		int w0, w1;
 		api_window(res, &w0, &w1);
 		gbuf_adds(o, "## Documentation\n\n");
+		{ sysref_excerpt *vd = verdict_pick(res->verb, res->docs, res->ndocs);
+		  if (vd) {
+		   gbuf_adds(o, "**Best match:** ");
+		   gbuf_adds(o, vd->path);
+		   gbuf_adds(o, "\n\n");
+		  }
+		}
 		for (i = w0; i < w1; i++) {
 			sysref_excerpt *er = &res->docs[i];
 			char dl[1100];
@@ -1137,6 +1220,16 @@ static void render_api_json(result *res, gbuf *o) {
 		gbuf_adds(o, kb);
 		if (res->guard[0]) json_escape(o, res->guard, strlen(res->guard));
 		else gbuf_adds(o, "null");
+		gbuf_adds(o, ",\"requirement\":");
+		if (res->guard[0]) {
+			gbuf rq;
+			gbuf_init(&rq);
+			if (requirement_line(&rq, res->guard)) json_escape(o, rq.p ? rq.p : "", rq.len);
+			else gbuf_adds(o, "null");
+			gbuf_free(&rq);
+		} else {
+			gbuf_adds(o, "null");
+		}
 		gbuf_adds(o, "}");
 	} else {
 		gbuf_adds(o, "null");
@@ -1194,9 +1287,24 @@ static void render_api_json(result *res, gbuf *o) {
 		gbuf_adds(o, "null");
 	}
 	char nb[128];
-	snprintf(nb, sizeof nb, ",\"status\":{\"declaration_found\":%s,\"documentation_found\":%s}}}",
+	snprintf(nb, sizeof nb, ",\"status\":{\"declaration_found\":%s,\"documentation_found\":%s}",
 	         res->matches > 0 ? "true" : "false", res->docs_total > 0 ? "true" : "false");
 	gbuf_adds(o, nb);
+	gbuf_adds(o, ",\"verdict\":");
+	{ sysref_excerpt *vd = verdict_pick(res->verb, res->docs, res->ndocs);
+	  if (vd) {
+	   char ln[32];
+	   snprintf(ln, sizeof ln, "%d", vd->ln);
+	   gbuf_adds(o, "{\"path\":");
+	   json_escape(o, vd->path, strlen(vd->path));
+	   gbuf_adds(o, ",\"line\":");
+	   gbuf_adds(o, ln);
+	   gbuf_adds(o, "}");
+	  } else {
+	   gbuf_adds(o, "null");
+	  }
+	 }
+	 gbuf_adds(o, "}}");
 }
 
 void sysref_render_api(result *res, gbuf *o) {

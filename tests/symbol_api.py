@@ -2,6 +2,7 @@
 import gzip
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import http.client
@@ -292,6 +293,15 @@ d = json.loads(run('api', 'sib.h', 'sib_sym', format='json'))
 check([e['path'].rsplit('/', 1)[-1] for e in d['data']['documentation']['excerpts']] ==
       ['b-foreign-close.txt', 'c-foreign-far.txt', 'a-foreign-alone.txt'],
       'json follows sibling rank order')
+# Verdict names the uniquely close lead, and stays silent without one.
+s = run('api', 'sib.h', 'sib_sym')
+check('Best match: ' in s and s.split('Best match: ', 1)[1].split('\n')[0].endswith('b-foreign-close.txt'),
+      'verdict names the lead')
+check(d['data']['verdict']['path'].endswith('b-foreign-close.txt'), 'json verdict')
+m = run('api', 'sib.h', 'sib_sym', format='markdown')
+check('**Best match:**' in m and 'b-foreign-close.txt' in m, 'markdown verdict')
+s = run('api', 'big_sym', expected=1, per_page=10)
+check('Best match:' not in s, 'verdict silent without family co-mention')
 for f in ('a-foreign-alone.txt', 'b-foreign-close.txt', 'c-foreign-far.txt'):
     (docs / f).unlink()
 (inc / 'sib.h').unlink()
@@ -325,6 +335,26 @@ check('DOCUMENTATION: 1 local excerpt' in s, 'excerpt count reflects deduplicati
 (docs / 'dup-a.txt').unlink()
 (docs / 'dup-b.txt').unlink()
 
+# Feature-test requirements are read off simple guards, never inferred.
+(inc / 'ft.h').write_text('#ifdef _GNU_SOURCE\nint ft_sym(int);\n#endif\n')
+s = run('api', 'ft.h', 'ft_sym')
+check('GUARDED BY: #ifdef _GNU_SOURCE' in s, 'guard quoted')
+check('Requires _GNU_SOURCE: define it before any header (e.g. -D_GNU_SOURCE); see feature_test_macros(7).' in s,
+      'concrete requirement')
+m = run('api', 'ft.h', 'ft_sym', format='markdown')
+check('Requires _GNU_SOURCE' in m, 'markdown requirement')
+j = json.loads(run('api', 'ft.h', 'ft_sym', format='json'))
+check(j['data']['kind']['requirement'] is not None and j['data']['kind']['requirement'].startswith('Requires _GNU_SOURCE'),
+      'json requirement')
+(inc / 'ft2.h').write_text('#ifndef _GNU_SOURCE\nint ft2_sym(int);\n#endif\n')
+s = run('api', 'ft2.h', 'ft2_sym')
+check('Unavailable when _GNU_SOURCE is defined; see feature_test_macros(7).' in s, 'negative requirement')
+(inc / 'ft3.h').write_text('#if defined(_GNU_SOURCE) || defined(_FOO)\nint ft3_sym(int);\n#endif\n')
+s = run('api', 'ft3.h', 'ft3_sym')
+check('Possible feature-test requirement:' in s and 'Requires _GNU_SOURCE:' not in s, 'complex guard stays a pointer')
+for f in ('ft.h', 'ft2.h', 'ft3.h'):
+    (inc / f).unlink()
+
 # Cross-hints route a wrong-verb guess to the right tool.
 s = run('man', 'zzz_no_such_page_ever', expected=1)
 check('use the api tool' in s and 'doc tool' in s, 'man miss hints at api and doc')
@@ -345,6 +375,12 @@ s = run('man', 'demo')
 check('SYNOPSIS' in s and 'demo' in s, 'existing native man query')
 s = run('man', 'dualsec')
 check('Also manual sections: 1, 3' in s, 'multi-section serving discloses the choice')
+m = re.search(r'\(showing (\d)', s)
+check(m and f'dualsec({m.group(1)})' in s, 'served section named')
+check(re.search(r'\(showing \d: (user command|system call|C library function|special file|file format|game|overview|system administration|kernel routine)\)', s) is not None,
+      'served section meaning stated')
+s = run('man', 'dualsec', format='markdown')
+check('(showing ' in s, 'markdown section choice')
 s = run('man', 'demo')
 check('page=1' in s and 'total_pages=1' in s, 'man page navigation')
 s = run('man', 'demo', expected=1, page=2)

@@ -192,16 +192,21 @@ left to infer from types. The declaration's kind is stated plainly:
 function-like and object-like macros (which have no address to take),
 plain functions, and any static/inline/extern keywords literally present.
 Enclosing conditional-compilation guards are quoted verbatim where present,
-never evaluated; guards mentioning feature-test vocabulary point at
+never evaluated; a guard that is exactly one simple feature-test check
+names its requirement outright, anything compound points at
 feature_test_macros(7). Where a quoted manual states a documented
 signature for the symbol, its parameter list is compared with the header's
 own form position by position (PARAMETERS), so names present only in the
 manual are distinguished from the header text without inventing any.
 Documentation excerpts are ranked (same-package, code-context, header-
-sibling proximity, repeated mentions, concise first); prose-only matches from other packages are
+sibling proximity, repeated mentions, concise first); a uniquely close
+family co-mention is named up front as the best match, otherwise the
+tool stays silent rather than bluffing. Prose-only matches from other packages are
 counted but not quoted, and matches beyond the ranked excerpt buffer are
 counted with the overflow reported. Pages share one ordering between the
-quoted excerpts and the later-page lookahead.
+quoted excerpts and the later-page lookahead. When manual pages exist in
+several sections, every section is named and the served default is stated
+with its conventional meaning.
 Search bounds (file count, read bytes, depth,
 match and reply limits) are reported when reached: a no-match is not an
 exhaustive absence claim. Internal function implementations are out of

@@ -271,6 +271,41 @@ static int man_probe_gnu(void) {
 /* List every manual section providing NAME, via one native `man -w`
  * call with no section selector. Paths are parsed for their /man<N>/
  * component and never opened. Returns the distinct section count. */
+/* Conventional section meanings for the multi-section notice. First
+ * character only (3p stays a library page); unknown sections get no
+ * parenthetical rather than a guessed one. */
+static const char *man_section_meaning(const char *sec) {
+ if (!sec || !sec[0]) return NULL;
+ switch (sec[0]) {
+ case '1': return "user command";
+ case '2': return "system call";
+ case '3': return "C library function";
+ case '4': return "special file";
+ case '5': return "file format";
+ case '6': return "game";
+ case '7': return "overview";
+ case '8': return "system administration";
+ case '9': return "kernel routine";
+ default: return NULL;
+ }
+}
+
+/* Multi-section notice: name every section and the served default, so no
+ * choice stays silent. Shared by the text body and the markdown rendering. */
+static void man_sections_note(gbuf *o, const char *served, const char *secs) {
+ gbuf_adds(o, "Also manual sections: ");
+ gbuf_adds(o, secs);
+ const char *m = man_section_meaning(served);
+ if (m) {
+  gbuf_adds(o, " (showing ");
+  gbuf_adds(o, served);
+  gbuf_adds(o, ": ");
+  gbuf_adds(o, m);
+  gbuf_adds(o, ")");
+ }
+ gbuf_adds(o, ". Narrow with -s N.\n");
+}
+
 static int man_sections(const char *name, char *out, size_t n) {
 	if (!safe_relative_path(name, 1)) return 0;
 	char *av[] = {"man", "-w", (char *)name, NULL};
@@ -1656,9 +1691,8 @@ static void render_man_md(result *res, gbuf *o) {
 	snprintf(head, sizeof head, "# %s(%s)\n\n", res->pagename, res->pagesec);
 	gbuf_adds(o, head);
 	if (res->man_altsec[0]) {
-		gbuf_adds(o, "Also manual sections: ");
-		gbuf_adds(o, res->man_altsec);
-		gbuf_adds(o, ". Narrow with -s N.\n\n");
+		man_sections_note(o, res->pagesec, res->man_altsec);
+		gbuf_addch(o, '\n');
 	}
 	gbuf_adds(o, "```\n");
 	fullbody_page(res, o);
@@ -1994,9 +2028,7 @@ int sysref_run(const char *query, const char *section, const char *source, int p
 		char secs[64];
 		if (man_sections(rp.name, secs, sizeof secs) > 1) {
 			snprintf(res->man_altsec, sizeof res->man_altsec, "%s", secs);
-			gbuf_adds(body, "Also manual sections: ");
-			gbuf_adds(body, secs);
-			gbuf_adds(body, ". Narrow with -s N.\n");
+			man_sections_note(body, rp.sec, secs);
 		}
 	}
 	int bn = 0;
