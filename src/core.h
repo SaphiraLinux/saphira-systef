@@ -29,9 +29,21 @@ typedef struct {
 #define SYSREF_MAX_QUERY_BYTES 8192u
 #define SYSREF_MAX_COMMAND_OUTPUT (4u * 1024u * 1024u)
 
-/* source: NULL or "man" = native man pages (default); "doc" = /usr/share/doc */
-int sysref_run(const char *query, const char *section, const char *source, result *res);
-int sysref_api(const char *query, int semantics, result *res);
+/* Paged response budget: lines per page for man and doc bodies. Small
+ * bodies stay byte-identical to their unpaged form; only the navigation
+ * block is added. Page boundaries snap to blank lines where one is near,
+ * so short passages are never split mid-paragraph when avoidable. */
+#define SYSREF_PAGE_LINES 30
+/* Sanity cap on a single built body before paging; practically unreachable
+ * for fragments (man renders whole pages, but only the matched fragment
+ * is ever paged). Hit it and the reply says so instead of silently
+ * dropping content. */
+#define SYSREF_BODY_MAX_BYTES (64u * 1024u)
+
+/* source: NULL or "man" = native man pages (default); "doc" = /usr/share/doc.
+ * page is 1-based; callers validate (page < 1 is treated as 1). */
+int sysref_run(const char *query, const char *section, const char *source, int page, result *res);
+int sysref_api(const char *query, int semantics, int page, result *res);
 void result_free(result *res);
 
 #endif

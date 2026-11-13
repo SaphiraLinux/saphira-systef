@@ -607,14 +607,68 @@ static void emit_range(gbuf *b, const line *ls, int a, int e) {
 	}
 }
 
-/* emit a section but never exceed the hard budget: whole lines only, so a
- * huge section (grep ENVIRONMENT) is trimmed at a line boundary instead of
- * blowing past the 400-token guard. */
-#define SECTION_BUDGET_BYTES 1000
-#define OUTPUT_BUDGET_BYTES 1600
-static void emit_section_budget(gbuf *b, const line *ls, int a, int e) {
-	for (int i = a; i < e && b->len < SECTION_BUDGET_BYTES; i++) {
-		if (ls[i].len + 1 > SECTION_BUDGET_BYTES - b->len) break;
+/* Paged output: stateless per-request slicing, so the same query and page
+ * always yield the same bytes and there is no server-side cursor to go
+ * stale. Page boundaries snap forward to a blank line within 8 lines so
+ * passages stay whole when avoidable; continuation pages carry a marker.
+ * Callers validate page >= 1 and check p > total for the out-of-range
+ * error (which names the valid range). */
+static int next_page_start(const line *ls, int cur, int e) {
+	int end = cur + SYSREF_PAGE_LINES;
+	if (end >= e) return e;
+	for (int k = end; k < end + 8 && k < e; k++)
+		if (ls[k].blank) return k + 1;
+	return end;
+}
+static int count_pages(const line *ls, int a, int e) {
+	if (a >= e) return 1;
+	int n = 0, cur = a;
+	while (cur < e) { n++; cur = next_page_start(ls, cur, e); }
+	return n < 1 ? 1 : n;
+}
+static int page_start(const line *ls, int a, int e, int p) {
+	int cur = a;
+	for (int i = 1; i < p && cur < e; i++) cur = next_page_start(ls, cur, e);
+	return cur;
+}
+static void emit_page_nav(gbuf *b, int page, int total) {
+	char nb[96];
+	snprintf(nb, sizeof nb, "page=%d\ntotal_pages=%d\n", page, total);
+	gbuf_adds(b, nb);
+	if (page < total) {
+		snprintf(nb, sizeof nb, "next_page=%d\n", page + 1);
+		gbuf_adds(b, nb);
+	}
+}
+static void emit_page_out_of_range(gbuf *b, int page, int total) {
+	char nb[96];
+	snprintf(nb, sizeof nb, "page %d out of range (1-%d).\n", page, total);
+	gbuf_adds(b, nb);
+}
+static void emit_page_body(gbuf *b, const line *ls, int a, int e, int page) {
+	if (page > 1) gbuf_adds(b, "(continued)\n");
+	int s = page_start(ls, a, e, page);
+	int f = next_page_start(ls, s, e);
+	for (int i = s; i < f; i++) {
+		gbuf_addn(b, ls[i].s, ls[i].len);
+		gbuf_addch(b, '\n');
+	}
+}
+
+/* emit a section, whole lines only, up to a sanity cap with an explicit
+ * note instead of silent truncation. Paging (not this cap) is what normally
+ * bounds the reply; the cap is a backstop for pathological pages. */
+#define SECTION_SANITY_BYTES (64u * 1024u)
+static void emit_section_all(gbuf *b, const line *ls, int a, int e) {
+	for (int i = a; i < e; i++) {
+		if (b->len > SECTION_SANITY_BYTES) {
+			gbuf_adds(b, "(response truncated at 64KB: narrow the query)\n");
+			break;
+		}
+		if (ls[i].len + 1 > SECTION_SANITY_BYTES - b->len) {
+			gbuf_adds(b, "(response truncated at 64KB: narrow the query)\n");
+			break;
+		}
 		gbuf_addn(b, ls[i].s, ls[i].len);
 		gbuf_addch(b, '\n');
 	}
@@ -1210,6 +1264,14 @@ static int list_doc_files(const char *dir, docfile *files, int max) {
 		n++;
 	}
 	closedir(d);
+	/* Deterministic order: same query must page identically. readdir
+	 * order is filesystem-dependent, so sort by name. */
+	for (int i = 1; i < n; i++) {
+		docfile tmp = files[i];
+		int j = i - 1;
+		while (j >= 0 && strcmp(files[j].name, tmp.name) > 0) { files[j + 1] = files[j]; j--; }
+		files[j + 1] = tmp;
+	}
 	return n;
 }
 
@@ -1346,7 +1408,17 @@ static void doc_file_map(gbuf *out, const docfile *files, int nfiles) {
 	gbuf_addch(out, '\n');
 }
 
-static int sysref_run_doc(const char *query, result *res) {
+/* One file per line, for paged map output. Deterministic: list_doc_files
+ * returns names sorted, so the same page always holds the same files. */
+static void doc_file_map_paged(gbuf *out, const docfile *files, int nfiles, int skip, int take) {
+	gbuf_adds(out, "DOC FILES:\n");
+	for (int i = skip; i < nfiles && i < skip + take; i++) {
+		gbuf_adds(out, files[i].name);
+		gbuf_addch(out, '\n');
+	}
+}
+
+static int sysref_run_doc(const char *query, int page, result *res) {
 	toks t;
 	memset(&t, 0, sizeof t);
 	if (!split_tokens(query, &t)) {
@@ -1408,10 +1480,20 @@ static int sysref_run_doc(const char *query, result *res) {
 	}
 
 	if (nt == 0) {
-		/* bare package query = map of the available doc files */
+		/* bare package query = map of the available doc files, paged */
+		int total = (nfiles + SYSREF_PAGE_LINES - 1) / SYSREF_PAGE_LINES;
+		if (total < 1) total = 1;
+		if (page > total) {
+			emit_page_out_of_range(&res->text, page, total);
+			res->status = 1;
+			toks_free(&t);
+			return 1;
+		}
+		emit_page_nav(&res->text, page, total);
 		gbuf_adds(&res->text, pkg);
 		gbuf_adds(&res->text, "(doc)\n");
-		doc_file_map(&res->text, files, nfiles);
+		doc_file_map_paged(&res->text, files, nfiles,
+		                   (page - 1) * SYSREF_PAGE_LINES, SYSREF_PAGE_LINES);
 		res->status = 0;
 		toks_free(&t);
 		return 0;
@@ -1472,16 +1554,30 @@ static int sysref_run_doc(const char *query, result *res) {
 		return 0;
 	}
 
-	gbuf_adds(&res->text, pkg);
-	gbuf_addch(&res->text, '/');
-	gbuf_adds(&res->text, files[bestf].name);
-	gbuf_addch(&res->text, '\n');
-	gbuf_addn(&res->text, best.p, best.len);
+	gbuf body;
+	gbuf_init(&body);
+	gbuf_adds(&body, pkg);
+	gbuf_addch(&body, '/');
+	gbuf_adds(&body, files[bestf].name);
+	gbuf_addch(&body, '\n');
+	gbuf_addn(&body, best.p, best.len);
 	gbuf_free(&best);
-	res->full_bytes = best_full;
-	strncpy(res->pagesec, files[bestf].name, sizeof res->pagesec - 1);
-	res->pagesec[sizeof res->pagesec - 1] = 0;
-	res->status = 0;
+	int bn = 0;
+	line *bls = build_lines(body.p ? body.p : "", body.len, &bn);
+	int total = count_pages(bls, 0, bn);
+	if (page > total) {
+		emit_page_out_of_range(&res->text, page, total);
+		res->status = 1;
+	} else {
+		emit_page_nav(&res->text, page, total);
+		emit_page_body(&res->text, bls, 0, bn, page);
+		res->full_bytes = best_full;
+		strncpy(res->pagesec, files[bestf].name, sizeof res->pagesec - 1);
+		res->pagesec[sizeof res->pagesec - 1] = 0;
+		res->status = 0;
+	}
+	free(bls);
+	gbuf_free(&body);
 	return 0;
 }
 
@@ -1496,9 +1592,10 @@ static int sysref_run_doc(const char *query, result *res) {
 /* ------------------------------------------------------------------ */
 void result_free(result *res) { gbuf_free(&res->text); }
 
-int sysref_run(const char *query, const char *section, const char *source, result *res) {
+int sysref_run(const char *query, const char *section, const char *source, int page, result *res) {
 	memset(res, 0, sizeof *res);
 	gbuf_init(&res->text);
+	if (page < 1) page = 1;
 	if (!query || !query[0]) {
 		gbuf_adds(&res->text, "no local man match for empty query\n");
 		res->status = 1;
@@ -1514,9 +1611,9 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 		res->status = 1;
 		return 1;
 	}
-	if (source && strcmp(source, "api") == 0) return sysref_api(query, 1, res);
-	if (source && strcmp(source, "doc") == 0) return sysref_run_doc(query, res);
-	if (source && strcmp(source, "headers") == 0) return sysref_api(query, 0, res);
+	if (source && strcmp(source, "api") == 0) return sysref_api(query, 1, page, res);
+	if (source && strcmp(source, "doc") == 0) return sysref_run_doc(query, page, res);
+	if (source && strcmp(source, "headers") == 0) return sysref_api(query, 0, page, res);
 	if (source && strcmp(source, "man") != 0) {
 		gbuf_adds(&res->text, "unknown source \"");
 		gbuf_adds(&res->text, source);
@@ -1541,26 +1638,26 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 		return 1;
 	}
 
-	gbuf page;
-	gbuf_init(&page);
-	if (!render_page(&rp, &page)) {
+	gbuf pg;
+	gbuf_init(&pg);
+	if (!render_page(&rp, &pg)) {
 		gbuf_adds(&res->text, "no local man match for \"");
 		gbuf_adds(&res->text, query);
 		gbuf_adds(&res->text, "\"\n");
 		gbuf_adds(&res->text, "Not a command? For C symbols use the api tool (--source api); for package docs the doc tool (--source doc).\n");
 		res->status = 1;
-		gbuf_free(&page);
+		gbuf_free(&pg);
 		toks_free(&allt);
 		return 1;
 	}
-	res->full_bytes = page.len;
+	res->full_bytes = pg.len;
 	strncpy(res->pagename, rp.name, sizeof res->pagename - 1);
 	res->pagename[sizeof res->pagename - 1] = 0;
 	strncpy(res->pagesec, rp.sec, sizeof res->pagesec - 1);
 	res->pagesec[sizeof res->pagesec - 1] = 0;
 
 	int n = 0;
-	line *ls = build_lines(page.p, page.len, &n);
+	line *ls = build_lines(pg.p, pg.len, &n);
 	int nh = 0;
 	int *heads = build_headings(ls, n, &nh);
 
@@ -1599,7 +1696,7 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 		if (h >= 0) {
 			int e = section_end(heads, nh, h);
 			if (e > n) e = n;
-			emit_section_budget(&f.a, ls, h, e);
+			emit_section_all(&f.a, ls, h, e);
 			matched = 1;
 		}
 	} else if (nop == 0 && nan == 0) {
@@ -1629,14 +1726,14 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 		if (h >= 0) {
 			int e = section_end(heads, nh, h);
 			if (e > n) e = n;
-			emit_section_budget(&f.a, ls, h, e);
+			emit_section_all(&f.a, ls, h, e);
 			matched = 1;
 		} else if (extract_anchor(ls, n, heads, nh, anchors[nan - 1], cmd, &f)) {
 			matched = 1;
 		}
 	}
 
-	if (matched && (f.a.len == 0 || f.a.len > OUTPUT_BUDGET_BYTES)) matched = 0;
+	if (matched && f.a.len == 0) matched = 0;
 	if (!matched) {
 		gbuf_adds(&res->text, "no match for \"");
 		gbuf_adds(&res->text, query);
@@ -1652,33 +1749,54 @@ int sysref_run(const char *query, const char *section, const char *source, resul
 		gbuf_adds(&res->text, "Not a command? For C symbols use the api tool (--source api); for package docs the doc tool (--source doc).\n");
 		res->status = 2;
 	} else {
-		gbuf_adds(&res->text, rp.name);
-		gbuf_addch(&res->text, '(');
-		gbuf_adds(&res->text, rp.sec);
-		gbuf_adds(&res->text, ")\n");
-		gbuf_addn(&res->text, f.a.p, f.a.len);
+		/* Complete body first, then slice: paging (not silent
+		 * truncation) is what bounds the reply. Page 1 of a short
+		 * body is byte-identical to the old bounded form. */
+		gbuf body;
+		gbuf_init(&body);
+		gbuf_adds(&body, rp.name);
+		gbuf_addch(&body, '(');
+		gbuf_adds(&body, rp.sec);
+		gbuf_adds(&body, ")\n");
+		gbuf_addn(&body, f.a.p, f.a.len);
 		for (int i = 0; i < f.nopt; i++) {
 			range rr = f.opt[i];
 			size_t ub = range_bytes(ls, rr);
-			if (res->text.len <= OUTPUT_BUDGET_BYTES && ub <= OUTPUT_BUDGET_BYTES - res->text.len)
-				emit_range(&res->text, ls, rr.a, rr.b);
+			if (body.len <= SECTION_SANITY_BYTES && ub <= SECTION_SANITY_BYTES - body.len)
+				emit_range(&body, ls, rr.a, rr.b);
+			else {
+				gbuf_adds(&body, "(response truncated at 64KB: narrow the query)\n");
+				break;
+			}
 		}
 		/* The served section was man's default choice, not the agent's:
 		 * name the alternatives so nothing is silently decided. */
 		if ((!section || !section[0]) && rp.name[0]) {
 			char secs[64];
 			if (man_sections(rp.name, secs, sizeof secs) > 1) {
-				gbuf_adds(&res->text, "Also manual sections: ");
-				gbuf_adds(&res->text, secs);
-				gbuf_adds(&res->text, ". Narrow with -s N.\n");
+				gbuf_adds(&body, "Also manual sections: ");
+				gbuf_adds(&body, secs);
+				gbuf_adds(&body, ". Narrow with -s N.\n");
 			}
 		}
+		int bn = 0;
+		line *bls = build_lines(body.p ? body.p : "", body.len, &bn);
+		int total = count_pages(bls, 0, bn);
+		if (page > total) {
+			emit_page_out_of_range(&res->text, page, total);
+			res->status = 1;
+		} else {
+			emit_page_nav(&res->text, page, total);
+			emit_page_body(&res->text, bls, 0, bn, page);
+		}
+		free(bls);
+		gbuf_free(&body);
 	}
 
 	frag_free(&f);
 	free(heads);
 	free(ls);
-	gbuf_free(&page);
+	gbuf_free(&pg);
 	toks_free(&allt);
 	return res->status;
 }

@@ -22,12 +22,14 @@
 "\"query\":{\"type\":\"string\"}," \
 "\"section\":{\"type\":\"string\"}," \
 "\"source\":{\"type\":\"string\",\"enum\":[\"man\",\"doc\",\"headers\",\"api\"]}," \
+"\"page\":{\"type\":\"integer\"}," \
 "\"stats\":{\"type\":\"boolean\"}}," \
 "\"required\":[\"query\"]}}," \
 "{\"name\":\"doc\"," \
 "\"description\":\"Find installed package documentation, guides and examples.\"," \
 "\"inputSchema\":{\"type\":\"object\",\"properties\":{" \
 "\"query\":{\"type\":\"string\"}," \
+"\"page\":{\"type\":\"integer\"}," \
 "\"stats\":{\"type\":\"boolean\"}}," \
 "\"required\":[\"query\"]}}," \
 "{\"name\":\"api\"," \
@@ -35,6 +37,7 @@
 "\"inputSchema\":{\"type\":\"object\",\"properties\":{" \
 "\"symbol\":{\"type\":\"string\"}," \
 "\"header\":{\"type\":\"string\"}," \
+"\"page\":{\"type\":\"integer\"}," \
 "\"stats\":{\"type\":\"boolean\"}}," \
 "\"required\":[]}}" \
 "]}"

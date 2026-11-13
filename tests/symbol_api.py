@@ -24,11 +24,14 @@ def check(ok, name):
     checks += 1
     print('ok', name)
 
-def run(source, *query, expected=0, custom=None):
-    p = subprocess.run([binary, '--source', source, *query], env=custom or env,
+def run(source, *query, expected=0, custom=None, page=None):
+    args = [binary, '--source', source, *query]
+    if page is not None:
+        args += ['--page', str(page)]
+    p = subprocess.run(args, env=custom or env,
                        capture_output=True, text=True, timeout=30)
     check(p.returncode == expected, f'{source} {query} exit {p.returncode}: {p.stderr}')
-    return p.stdout
+    return p.stdout + p.stderr
 
 (inc / 'mpfr.h').write_text('/* mpfr_subnormalize is not a declaration here */\n'
                            '#ifndef TEST_MPFR\n#define TEST_MPFR\n'
@@ -171,13 +174,27 @@ check('widget_open(fd, flags)' in s, 'foreign code-context match still quoted')
 check('Omitted 1 low-relevance' in s and 'prose-only from other packages' in s, 'suppression reported with count')
 (docs / 'foreign-prose.txt').unlink()
 (docs / 'foreign-code.txt').unlink()
-for i, pad in ((1, 'a'), (2, 'b'), (3, 'c')):
+for i, pad in ((1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')):
     (docs / f'big{i}.txt').write_text('big_sym ' + pad * 680 + '\n')
 s = run('api', 'big_sym', expected=1)
-check(s.count('DOCUMENT: ') == 2, 'excerpt budget binds before the third match')
-check('Omitted 1' in s, 'budget omission reported')
-for i in (1, 2, 3):
+check(s.count('DOCUMENT: ') == 3, 'page 1 quotes first window of excerpts')
+check('page=1' in s and 'total_pages=2' in s and 'next_page=2' in s, 'page 1 navigation')
+check('Additional documentation matches on later pages' in s, 'later-page hint')
+check('DOCUMENTATION: 4 local excerpt(s) total, 3 quoted on this page.' in s, 'excerpt count reflects paging')
+s = run('api', 'big_sym', expected=1, page=2)
+check(s.count('DOCUMENT: ') == 1, 'page 2 quotes remaining excerpt')
+check('page=2' in s and 'total_pages=2' in s, 'page 2 navigation')
+check('next_page' not in s, 'no next page on last page')
+s = run('api', 'big_sym', expected=1, page=3)
+check('out of range (1-2)' in s, 'page out of range names valid range')
+for i in (1, 2, 3, 4):
     (docs / f'big{i}.txt').unlink()
+s = run('doc', 'fixture')
+check('page=1' in s and 'total_pages=1' in s, 'doc map page navigation')
+s = run('doc', 'fixture', expected=1, page=2)
+check('out of range (1-1)' in s, 'doc map out of range names valid range')
+s = run('man', 'demo', expected=2, page=0)
+check('invalid --page value' in s, 'invalid page rejected')
 (docs / 'same-package.txt').write_text('mpfr_subnormalize has a fixture contract.\n')
 check('same installed package/version' in run('api', 'mpfr_subnormalize'), 'version-associated local reference')
 (docs / 'same-package.txt').unlink()
@@ -214,6 +231,10 @@ s = run('man', 'demo')
 check('SYNOPSIS' in s and 'demo' in s, 'existing native man query')
 s = run('man', 'dualsec')
 check('Also manual sections: 1, 3' in s, 'multi-section serving discloses the choice')
+s = run('man', 'demo')
+check('page=1' in s and 'total_pages=1' in s, 'man page navigation')
+s = run('man', 'demo', expected=1, page=2)
+check('out of range (1-1)' in s, 'man page out of range names valid range')
 
 # Three discoverable MCP tools sharing one handler, framed and newline transports.
 def rpc(method, params=None, framed=False):
@@ -244,6 +265,12 @@ check('error' in response, 'MCP api rejects empty arguments')
 response = rpc('tools/call', {'name': 'doc', 'arguments': {'query': 'fixture fixture_symbol', 'stats': True}})
 check('documented operation' in response['result']['content'][0]['text'], 'MCP doc tool')
 check('[sysref]' in response['result']['content'][0]['text'], 'MCP stats footer on doc tool')
+response = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'demo', 'page': 2}})
+check('out of range (1-1)' in response['result']['content'][0]['text'], 'MCP man page out of range')
+response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize', 'page': 99}})
+check('out of range' in response['result']['content'][0]['text'], 'MCP api page out of range')
+response = rpc('tools/call', {'name': 'doc', 'arguments': {'query': 'fixture', 'page': 'two'}})
+check('error' in response, 'MCP page rejects non-integer')
 response = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'mpfr_subnormalize', 'source': 'api'}})
 check(signature in response['result']['content'][0]['text'], 'MCP legacy man source=api')
 s = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'demo'}})

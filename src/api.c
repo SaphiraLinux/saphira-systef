@@ -45,14 +45,15 @@ typedef struct {
   char pkg[256];
   int pkg_known;
   /* Whitespace-normalized hashes of emitted excerpts: exact duplicates
-   * across files add no information and are skipped, not counted. */
+   * across files add no information and are not counted. */
   unsigned long seen[32];
   int nseen;
-  /* Suppressed low-relevance matches and excerpt bytes emitted: bounded
-   * progressive disclosure with an honest count. */
+  /* Suppressed low-relevance matches (prose-only from other packages). */
   int skipped;
-  size_t xbytes;
+  /* 1-based result page; windowing is deterministic per (query, page). */
+  int page;
 } search;
+#define API_PAGE_SIZE 3
 static int ident(int c) { return isalnum((unsigned char)c) || c == '_'; }
 static int symbol_ok(const char *s) {
  if (!s || !(isalpha((unsigned char)*s) || *s == '_')) return 0;
@@ -286,10 +287,6 @@ static void excerpt_add(gbuf *out, const char *p, size_t n, int html);
 static unsigned long excerpt_hash(const char *p, size_t n);
 static int code_context(const char *p, size_t pos, size_t n, size_t sl);
 static int mentions_feature_test(const char *g);
-/* Total excerpt payload budget: bounded progressive disclosure. Same-owner
- * and code-context matches are ordered first, so the budget binds last,
- * never first. */
-#define EXCERPT_BUDGET (2048u)
 static void docs_visit(search *s,const char *path) {
  const char *name=strrchr(path,'/'); name=name?name+1:path;
  /* Man trees contain thousands of compressed files: function-name pages
@@ -313,38 +310,37 @@ static void docs_visit(search *s,const char *path) {
      if(b.p[stop++]=='\n') { lines++; if(stop<b.len && b.p[stop]=='\n') break; }
     }
     if(stop-i>1200) stop=end;
-    { /* Exact-duplicate excerpts add no information: keep the first
-       * occurrence, skip repeats without counting them. */
-     unsigned long h=excerpt_hash(b.p+i, stop-i);
-     int dup=0;
-     for (int d=0;d<s->nseen;d++) if (s->seen[d]==h) { dup=1; break; }
-     if (dup) break;
-     if (s->nseen<32) s->seen[s->nseen++]=h;
-     /* Prose-only match from a foreign package is provably not the
-      * contract: same-package and code-context matches pass through,
-      * but prose about "major versions" is counted, not quoted.
-      * Suppression needs proven foreignness (header owner known). */
-     size_t sl=strlen(s->symbol);
-     int code=0;
-     for (size_t k=i;k+sl<=stop;k++) {
-      if (!memcmp(b.p+k,s->symbol,sl) &&
-          (k==0 || !ident(b.p[k-1])) && (k+sl==stop || !ident(b.p[k+sl]))) {
-       if (code_context(b.p,k,stop,sl)) { code=1; break; }
+    /* Accepted excerpts are ordered same-package first (two-pass walk),
+     * then code-context, then the rest; the current page quotes its window.
+     * Exact duplicates are kept once and not counted; prose-only matches
+     * from a foreign package are counted but not quoted. */
+    int ord = s->docs;
+    { unsigned long h=excerpt_hash(b.p+i, stop-i);
+      int dup=0;
+      for (int d=0;d<s->nseen;d++) if (s->seen[d]==h) { dup=1; break; }
+      if (dup) break;
+      if (s->nseen<32) s->seen[s->nseen++]=h;
+      size_t sl=strlen(s->symbol);
+      int code=0;
+      for (size_t k=i;k+sl<=stop;k++) {
+       if (!memcmp(b.p+k,s->symbol,sl) &&
+           (k==0 || !ident(b.p[k-1])) && (k+sl==stop || !ident(b.p[k+sl]))) {
+        if (code_context(b.p,k,stop,sl)) { code=1; break; }
+       }
       }
-     }
-     if (!matched_owner && s->pkg_known && !code) { s->skipped++; break; }
-     size_t xlen = stop-i>1500 ? 1500 : stop-i;
-     if (s->xbytes + xlen > EXCERPT_BUDGET) { s->skipped++; break; }
-     s->xbytes += xlen;
+      if (!matched_owner && s->pkg_known && !code) { s->skipped++; break; }
     }
     s->docs++;
-    if(s->docs<=3 && s->res->text.len<REPLY_LIMIT) {
+    int inwin = ord >= (s->page-1)*API_PAGE_SIZE && ord < s->page*API_PAGE_SIZE;
+    if (inwin) {
      ref(&s->res->text,"DOCUMENT: ",path,ln);
      gbuf_adds(&s->res->text,matched_owner
       ? "LOCAL EXCERPT (verbatim; same installed package/version as header):\n"
       : "LOCAL EXCERPT (verbatim; applicability/version not established):\n");
      if(stop-i<=1500) excerpt_add(&s->res->text,b.p+i,stop-i,is_html(path));
      else gbuf_adds(&s->res->text,"Matching line exceeds excerpt budget; inspect source.\n");
+     gbuf_adds(&s->res->text,"\n");
+    }
     if (!s->docform[0]) {
      /* Documented signature: the symbol word followed by a parenthesized
       * list inside the quoted excerpt (e.g. a texinfo Function line).
@@ -364,12 +360,10 @@ static void docs_visit(search *s,const char *path) {
       }
      }
     }
-    gbuf_adds(&s->res->text,"\n");
+    break;
    }
-   break;
-  }
-  if(end==b.len) break;
-  i=end+1; ln++;
+   if(end==b.len) break;
+   i=end+1; ln++;
  }
  gbuf_free(&b);
 }
@@ -588,7 +582,7 @@ static void packages(search *s, const char *missing) {
  if(!found) gbuf_adds(&s->res->text,"Package ownership/availability cannot be determined from local metadata.\n");
  if(!s->docs) gbuf_adds(&s->res->text,"Documentation provider unknown; header ownership does not establish a documentation package. No installation command verified.\n");
 }
-int sysref_api(const char *query, int semantics, result *res) {
+int sysref_api(const char *query, int semantics, int page, result *res) {
  char q[SYSREF_MAX_QUERY_BYTES+1]; snprintf(q,sizeof q,"%s",query);
  char *save=NULL,*first=strtok_r(q," \t\n",&save),*second=strtok_r(NULL," \t\n",&save),*extra=strtok_r(NULL," \t\n",&save);
  if(!first || extra) { gbuf_adds(&res->text,"Use [header.h] symbol (one C identifier).\n"); res->status=1; return 1; }
@@ -596,7 +590,7 @@ int sysref_api(const char *query, int semantics, result *res) {
  int named=second || strchr(first,'.') || strchr(first,'/');
  if((second || !named) && !symbol_ok(sym)) { gbuf_adds(&res->text,"Invalid C symbol.\n"); res->status=1; return 1; }
  if(named && (first[0]=='/' || strstr(first,".."))) { gbuf_adds(&res->text,"Header must be relative to an include root.\n"); res->status=1; return 1; }
-  search s={.symbol=sym,.res=res};
+  search s={.symbol=sym,.res=res,.page=(page<1?1:page)};
   if(semantics && (second || !named)) { gbuf_adds(&res->text,"SYMBOL: "); gbuf_adds(&res->text,sym); gbuf_addch(&res->text,'\n'); }
  const char *roots=root("SYSREF_INCLUDE_PATH","/usr/include:/usr/local/include");
  if (!named && !semantics) {
@@ -670,21 +664,40 @@ int sysref_api(const char *query, int semantics, result *res) {
   rs=strdup(dr); sp=NULL;
   for(r=strtok_r(rs,":",&sp);r;r=strtok_r(NULL,":",&sp)) walk(&s,r,0,docs_visit);
   free(rs);
-  /* Verified same-package/version documentation gets the first slots.
-   * Only repeat the bounded scan if unverified candidates remain. */
-  if(s.docs<3 && s.candidates>s.docs) {
-   s.docpass=1; s.files=0; s.readbytes=0;
-   rs=strdup(dr); sp=NULL;
-   for(r=strtok_r(rs,":",&sp);r;r=strtok_r(NULL,":",&sp)) walk(&s,r,0,docs_visit);
-   free(rs);
-  }
-   if(s.docs>3) gbuf_adds(&res->text,"Additional documentation matches omitted; use source=doc with the named package for more context.\n");
+   /* Verified same-package/version documentation gets the first slots.
+    * Only repeat the bounded scan if unverified candidates remain. */
+   if(s.docs < s.page*API_PAGE_SIZE && s.candidates>s.docs) {
+    s.docpass=1; s.files=0; s.readbytes=0;
+    rs=strdup(dr); sp=NULL;
+    for(r=strtok_r(rs,":",&sp);r;r=strtok_r(NULL,":",&sp)) walk(&s,r,0,docs_visit);
+    free(rs);
+   }
+   {
+    int total = (s.docs + API_PAGE_SIZE - 1) / API_PAGE_SIZE;
+    if (total < 1) total = 1;
+    if (s.page > total) {
+     char nb[96];
+     snprintf(nb, sizeof nb, "page %d out of range (1-%d).\n", s.page, total);
+     gbuf_adds(&res->text, nb);
+     res->status = 1;
+    } else {
+     char nb[96];
+     snprintf(nb, sizeof nb, "page=%d\ntotal_pages=%d\n", s.page, total);
+     gbuf_adds(&res->text, nb);
+     if (s.page < total) {
+      snprintf(nb, sizeof nb, "next_page=%d\n", s.page+1);
+      gbuf_adds(&res->text, nb);
+     }
+    }
+   }
+    if(s.docs > s.page*API_PAGE_SIZE) { char mb[256]; snprintf(mb, sizeof mb, "Additional documentation matches on later pages; use page=%d for more. For full package context use source=doc with the named package.\n", s.page+1); gbuf_adds(&res->text, mb); }
+    else if(s.docs>API_PAGE_SIZE) gbuf_adds(&res->text,"Additional documentation matches omitted; use source=doc with the named package for more context.\n");
    /* Lifecycle block: concise evidence-first summary. A signature alone
     * cannot establish argument meaning; the agent must see whether
     * authoritative local documentation exists before inferring behaviour. */
-    if(!s.docs) gbuf_adds(&res->text,"DOCUMENTATION: unavailable in searched files (not proof that a documentation package exists).\n");
-    else { char dn[64]; snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) quoted above.\n",s.docs); gbuf_adds(&res->text,dn); }
-    if(s.skipped>0) { char sb[160]; snprintf(sb,sizeof sb,"Omitted %d low-relevance match(es) (prose-only from other packages or excerpt budget); narrow with source=doc and the package name.\n",s.skipped); gbuf_adds(&res->text,sb); }
+     if(!s.docs) gbuf_adds(&res->text,"DOCUMENTATION: unavailable in searched files (not proof that a documentation package exists).\n");
+     else { char dn[96]; int qn = s.docs - (s.page-1)*API_PAGE_SIZE; if (qn < 0) qn = 0; if (qn > API_PAGE_SIZE) qn = API_PAGE_SIZE; if (s.page > 1 || s.docs > API_PAGE_SIZE) snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) total, %d quoted on this page.\n",s.docs,qn); else snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) quoted above.\n",s.docs); gbuf_adds(&res->text,dn); }
+     if(s.skipped>0) { char sb[160]; snprintf(sb,sizeof sb,"Omitted %d low-relevance match(es) (prose-only from other packages); narrow with source=doc and the package name.\n",s.skipped); gbuf_adds(&res->text,sb); }
    if(semantics && s.matches) parameters_block(&s);
    if(s.docs) gbuf_adds(&res->text,"ARGUMENTS: described only where quoted above; no separate parameter table inferred from types.\n");
    else gbuf_adds(&res->text,"ARGUMENTS: unavailable -- no local documentation names the parameters; do not infer from types.\n");

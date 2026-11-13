@@ -6,6 +6,18 @@
 #include <string.h>
 #include <unistd.h>
 
+static int parse_page(const char *s) {
+	if (!s || !*s) return -1;
+	long v = 0;
+	for (const char *p = s; *p; p++) {
+		if (*p < '0' || *p > '9') return -1;
+		v = v * 10 + (*p - '0');
+		if (v > 1000000) return -1;
+	}
+	if (v < 1) return -1;
+	return (int)v;
+}
+
 static const char *usage =
     "sysref - minimal local man-page context for AI agents\n"
     "\n"
@@ -22,6 +34,7 @@ static const char *usage =
     "  sysref --http[=ADDR] | --web[=ADDR]   webMCP HTTP server (default 127.0.0.1:8931)\n"
     "                                 requires APIKEY in /etc/sysref/sysref.conf\n"
     "  sysref --conf PATH             config file path (APIKEY for webMCP)\n"
+    "  sysref --page N                  show page N of a multi-page reply (default 1)\n"
     "  sysref --bench                 benchmark table\n"
     "\n"
     "  QUERY forms: command [option] | command [section-name] | command subcommand\n"
@@ -53,6 +66,7 @@ int main(int argc, char **argv) {
 	const char *section = NULL;
 	const char *source = NULL;
 	int stats = 0;
+	int page = 1;
 
 	for (int i = 1; i < argc; i++) {
 		char *a = argv[i];
@@ -61,6 +75,13 @@ int main(int argc, char **argv) {
 		else if (strcmp(a, "--stats") == 0) stats = 1;
 		else if (strncmp(a, "--source=", 9) == 0) source = a + 9;
 		else if (strcmp(a, "--source") == 0 && i + 1 < argc) source = argv[++i];
+		else if (strncmp(a, "--page=", 7) == 0) {
+			page = parse_page(a + 7);
+			if (page < 1) { fputs("sysref: invalid --page value (positive integer required)\n", stderr); return 2; }
+		} else if (strcmp(a, "--page") == 0 && i + 1 < argc) {
+			page = parse_page(argv[++i]);
+			if (page < 1) { fputs("sysref: invalid --page value (positive integer required)\n", stderr); return 2; }
+		}
 		else if (strcmp(a, "--conf") == 0 && i + 1 < argc) conf = argv[++i];
 		else if (strcmp(a, "--web") == 0 || strcmp(a, "--http") == 0) {
 			mode = 2;
@@ -113,7 +134,7 @@ int main(int argc, char **argv) {
 
 	result res;
 	memset(&res, 0, sizeof res);
-	int st = sysref_run(query, section, source, &res);
+	int st = sysref_run(query, section, source, page, &res);
 	if (res.text.p) write(1, res.text.p, res.text.len);
 	if (stats) {
 		double reduction = res.full_bytes ? 100.0 * (1.0 - (double)res.text.len / (double)res.full_bytes) : 0.0;
