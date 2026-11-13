@@ -1,4 +1,5 @@
 #include "core.h"
+#include "json.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1146,10 +1147,15 @@ typedef struct {
 } docfile;
 
 /* supported: plain, .txt, .md, and .html via the small tag stripper below.
- * legal/boilerplate changelogs are excluded from candidates. */
+ * legal/boilerplate changelogs are excluded from candidates, as are
+ * generated search indexes (searchindex*.js, objects.inv): they match every
+ * term by construction and explain nothing. */
 static int doc_file_kind(const char *name) {
 	const char *base = strrchr(name, '/');
 	base = base ? base + 1 : name;
+	{ size_t bl = strlen(base);
+	  if (bl > 3 && !strcmp(base + bl - 3, ".js") && !strncasecmp(base, "searchindex", 11)) return 0; }
+	if (!strcasecmp(base, "objects.inv")) return 0;
 	static const char *skip[] = {"LICENSE", "COPYING", "ChangeLog", "ChangeLog.", "AUTHORS",
 	                             "INSTALL", "NEWS", "README.CHANGES", NULL};
 	for (int i = 0; skip[i]; i++)
@@ -1408,16 +1414,6 @@ static void doc_file_map(gbuf *out, const docfile *files, int nfiles) {
 	gbuf_addch(out, '\n');
 }
 
-/* One file per line, for paged map output. Deterministic: list_doc_files
- * returns names sorted, so the same page always holds the same files. */
-static void doc_file_map_paged(gbuf *out, const docfile *files, int nfiles, int skip, int take) {
-	gbuf_adds(out, "DOC FILES:\n");
-	for (int i = skip; i < nfiles && i < skip + take; i++) {
-		gbuf_adds(out, files[i].name);
-		gbuf_addch(out, '\n');
-	}
-}
-
 static int sysref_run_doc(const char *query, int page, result *res) {
 	toks t;
 	memset(&t, 0, sizeof t);
@@ -1480,20 +1476,32 @@ static int sysref_run_doc(const char *query, int page, result *res) {
 	}
 
 	if (nt == 0) {
-		/* bare package query = map of the available doc files, paged */
-		int total = (nfiles + SYSREF_PAGE_LINES - 1) / SYSREF_PAGE_LINES;
+		/* bare package query = map of the available doc files, paged.
+		 * The full name listing is kept in the result so markdown and
+		 * json slice the same bytes the text path pages. */
+		gbuf *fb = &res->fullbody;
+		for (int i = 0; i < nfiles; i++) {
+			gbuf_adds(fb, files[i].name);
+			gbuf_addch(fb, '\n');
+		}
+		int bn = 0;
+		line *bls = build_lines(fb->p ? fb->p : "", fb->len, &bn);
+		int total = count_pages(bls, 0, bn);
 		if (total < 1) total = 1;
+		res->total_pages = total;
 		if (page > total) {
 			emit_page_out_of_range(&res->text, page, total);
 			res->status = 1;
+			free(bls);
 			toks_free(&t);
 			return 1;
 		}
 		emit_page_nav(&res->text, page, total);
 		gbuf_adds(&res->text, pkg);
 		gbuf_adds(&res->text, "(doc)\n");
-		doc_file_map_paged(&res->text, files, nfiles,
-		                   (page - 1) * SYSREF_PAGE_LINES, SYSREF_PAGE_LINES);
+		gbuf_adds(&res->text, "DOC FILES:\n");
+		emit_page_body(&res->text, bls, 0, bn, page);
+		free(bls);
 		res->status = 0;
 		toks_free(&t);
 		return 0;
@@ -1554,17 +1562,17 @@ static int sysref_run_doc(const char *query, int page, result *res) {
 		return 0;
 	}
 
-	gbuf body;
-	gbuf_init(&body);
-	gbuf_adds(&body, pkg);
-	gbuf_addch(&body, '/');
-	gbuf_adds(&body, files[bestf].name);
-	gbuf_addch(&body, '\n');
-	gbuf_addn(&body, best.p, best.len);
+	gbuf *body = &res->fullbody;
+	gbuf_adds(body, pkg);
+	gbuf_addch(body, '/');
+	gbuf_adds(body, files[bestf].name);
+	gbuf_addch(body, '\n');
+	gbuf_addn(body, best.p, best.len);
 	gbuf_free(&best);
 	int bn = 0;
-	line *bls = build_lines(body.p ? body.p : "", body.len, &bn);
+	line *bls = build_lines(body->p ? body->p : "", body->len, &bn);
 	int total = count_pages(bls, 0, bn);
+	res->total_pages = total < 1 ? 1 : total;
 	if (page > total) {
 		emit_page_out_of_range(&res->text, page, total);
 		res->status = 1;
@@ -1577,7 +1585,6 @@ static int sysref_run_doc(const char *query, int page, result *res) {
 		res->status = 0;
 	}
 	free(bls);
-	gbuf_free(&body);
 	return 0;
 }
 
@@ -1590,12 +1597,224 @@ static int sysref_run_doc(const char *query, int page, result *res) {
 /* ------------------------------------------------------------------ */
 /* top-level entry point                                               */
 /* ------------------------------------------------------------------ */
-void result_free(result *res) { gbuf_free(&res->text); }
+void result_free(result *res) { gbuf_free(&res->text); gbuf_free(&res->fullbody); free(res->docs); res->docs = NULL; res->ndocs = 0; }
 
-int sysref_run(const char *query, const char *section, const char *source, int page, int per_page, result *res) {
+/* ------------------------------------------------------------------ */
+/* alternate renderings: markdown and json from collected evidence     */
+/* ------------------------------------------------------------------ */
+/* The text path stays byte-identical; these renderers read the same
+ * sidecars the text path wrote (fullbody slices, api rank buffer), so
+ * the three formats cannot disagree about the evidence. */
+void sysref_render_api(result *res, gbuf *o);
+
+void render_nav_md(gbuf *o, int page, int total) {
+	char nb[96];
+	if (page > total)
+		snprintf(nb, sizeof nb, "page %d out of range (1-%d).\n", page, total);
+	else if (page < total)
+		snprintf(nb, sizeof nb, "*Page %d of %d — next: %d*\n", page, total, page + 1);
+	else
+		snprintf(nb, sizeof nb, "*Page %d of %d*\n", page, total);
+	gbuf_adds(o, nb);
+}
+
+/* Slice the stored pre-paging body for the requested page. */
+static void fullbody_page(result *res, gbuf *out) {
+	int bn = 0;
+	line *bls = build_lines(res->fullbody.p ? res->fullbody.p : "", res->fullbody.len, &bn);
+	emit_page_body(out, bls, 0, bn, res->page);
+	free(bls);
+}
+
+static int fullbody_lines(result *res) {
+	int bn = 0;
+	line *bls = build_lines(res->fullbody.p ? res->fullbody.p : "", res->fullbody.len, &bn);
+	free(bls);
+	return bn;
+}
+
+void sysref_json_head(gbuf *o, result *res) {
+	gbuf_adds(o, "{\"tool\":");
+	json_escape(o, res->verb, strlen(res->verb));
+	gbuf_adds(o, ",\"query\":");
+	json_escape(o, res->query ? res->query : "", res->query ? strlen(res->query) : 0);
+	char nb[128];
+	const char *fmt = res->format == SYSREF_FMT_JSON ? "json" : "markdown";
+	snprintf(nb, sizeof nb, ",\"format\":\"%s\",\"status\":%d,\"page\":%d,\"total_pages\":%d,\"next_page\":",
+	         fmt, res->status, res->page, res->total_pages);
+	gbuf_adds(o, nb);
+	if (res->page < res->total_pages) {
+		snprintf(nb, sizeof nb, "%d,\"data\":", res->page + 1);
+		gbuf_adds(o, nb);
+	} else {
+		gbuf_adds(o, "null,\"data\":");
+	}
+}
+
+static void render_man_md(result *res, gbuf *o) {
+	char head[300];
+	snprintf(head, sizeof head, "# %s(%s)\n\n", res->pagename, res->pagesec);
+	gbuf_adds(o, head);
+	if (res->man_altsec[0]) {
+		gbuf_adds(o, "Also manual sections: ");
+		gbuf_adds(o, res->man_altsec);
+		gbuf_adds(o, ". Narrow with -s N.\n\n");
+	}
+	gbuf_adds(o, "```\n");
+	fullbody_page(res, o);
+	gbuf_adds(o, "```\n\n");
+	render_nav_md(o, res->page, res->total_pages);
+}
+
+static void render_man_json(result *res, gbuf *o) {
+	sysref_json_head(o, res);
+	if (res->status != 0 || !res->pagename[0]) {
+		gbuf_adds(o, "null}");
+		return;
+	}
+	gbuf_adds(o, "{\"page_name\":");
+	json_escape(o, res->pagename, strlen(res->pagename));
+	gbuf_adds(o, ",\"section\":");
+	json_escape(o, res->pagesec, strlen(res->pagesec));
+	gbuf_adds(o, ",\"sections_available\":");
+	if (res->man_altsec[0]) {
+		gbuf_adds(o, "[");
+		char secs[64];
+		snprintf(secs, sizeof secs, "%s", res->man_altsec);
+		int first = 1;
+		for (char *tok = strtok(secs, ","); tok; tok = strtok(NULL, ",")) {
+			while (*tok == ' ') tok++;
+			if (!first) gbuf_adds(o, ",");
+			json_escape(o, tok, strlen(tok));
+			first = 0;
+		}
+		gbuf_adds(o, "]");
+	} else {
+		gbuf_adds(o, "null");
+	}
+	gbuf_adds(o, ",\"body\":");
+	gbuf body;
+	gbuf_init(&body);
+	fullbody_page(res, &body);
+	json_escape(o, body.p ? body.p : "", body.len);
+	gbuf_free(&body);
+	char nb[64];
+	snprintf(nb, sizeof nb, ",\"full_bytes\":%zu}}", res->full_bytes);
+	gbuf_adds(o, nb);
+}
+
+static void render_doc_md(result *res, gbuf *o) {
+	char head[300];
+	snprintf(head, sizeof head, "# %s (doc)\n\n", res->pagename);
+	gbuf_adds(o, head);
+	if (res->status != 0) {
+		gbuf_addn(o, res->text.p ? res->text.p : "", res->text.len);
+		return;
+	}
+	gbuf slice;
+	gbuf_init(&slice);
+	fullbody_page(res, &slice);
+	if (res->pagesec[0]) {
+		/* term query: the first fullbody line is "pkg/file". */
+		gbuf_adds(o, "## ");
+		gbuf_adds(o, res->pagename);
+		gbuf_addch(o, '/');
+		gbuf_adds(o, res->pagesec);
+		gbuf_adds(o, "\n\n");
+		gbuf_addn(o, slice.p ? slice.p : "", slice.len);
+		if (slice.len && slice.p[slice.len - 1] != '\n') gbuf_addch(o, '\n');
+	} else {
+		/* bare map: one file per line, rendered as bullets. */
+		int bn = 0;
+		line *bls = build_lines(slice.p ? slice.p : "", slice.len, &bn);
+		for (int i = 0; i < bn; i++) {
+			gbuf_adds(o, "- ");
+			gbuf_addn(o, bls[i].s, bls[i].len);
+			gbuf_addch(o, '\n');
+		}
+		free(bls);
+	}
+	gbuf_free(&slice);
+	gbuf_addch(o, '\n');
+	render_nav_md(o, res->page, res->total_pages);
+}
+
+static void render_doc_json(result *res, gbuf *o) {
+	sysref_json_head(o, res);
+	if (res->status != 0) {
+		gbuf_adds(o, "null}");
+		return;
+	}
+	gbuf_adds(o, "{\"package\":");
+	json_escape(o, res->pagename, strlen(res->pagename));
+	gbuf slice;
+	gbuf_init(&slice);
+	fullbody_page(res, &slice);
+	if (res->pagesec[0]) {
+		gbuf_adds(o, ",\"mode\":\"excerpt\",\"file\":");
+		json_escape(o, res->pagesec, strlen(res->pagesec));
+		gbuf_adds(o, ",\"paragraph\":");
+		json_escape(o, slice.p ? slice.p : "", slice.len);
+		char nb[64];
+		snprintf(nb, sizeof nb, ",\"full_bytes\":%zu}}", res->full_bytes);
+		gbuf_adds(o, nb);
+	} else {
+		gbuf_adds(o, ",\"mode\":\"map\",\"files\":[");
+		int bn = 0;
+		line *bls = build_lines(slice.p ? slice.p : "", slice.len, &bn);
+		for (int i = 0; i < bn; i++) {
+			if (i) gbuf_adds(o, ",");
+			json_escape(o, bls[i].s, bls[i].len);
+		}
+		free(bls);
+		char nb[64];
+		snprintf(nb, sizeof nb, "],\"total_files\":%d}}", fullbody_lines(res));
+		gbuf_adds(o, nb);
+	}
+	gbuf_free(&slice);
+}
+
+void sysref_render_fmt(result *res, int format, gbuf *o) {
+	int save = res ? res->format : SYSREF_FMT_TEXT;
+	if (res) res->format = format;
+	if (res && format == SYSREF_FMT_MARKDOWN && res->status != 0 && strcmp(res->verb, "api") != 0 &&
+	    strcmp(res->verb, "headers") != 0) {
+		/* failures carry guidance, not evidence: heading plus the text. */
+		gbuf_adds(o, "# ");
+		gbuf_adds(o, res->query ? res->query : "");
+		gbuf_adds(o, "\n\n");
+		gbuf_addn(o, res->text.p ? res->text.p : "", res->text.len);
+	} else if (res && !strcmp(res->verb, "man")) {
+		if (format == SYSREF_FMT_MARKDOWN) render_man_md(res, o);
+		else render_man_json(res, o);
+	} else if (res && !strcmp(res->verb, "doc")) {
+		if (format == SYSREF_FMT_MARKDOWN) render_doc_md(res, o);
+		else render_doc_json(res, o);
+	} else if (res) {
+		sysref_render_api(res, o);
+	}
+	if (res) res->format = save;
+}
+
+void sysref_render(result *res) {
+	if (!res || res->format == SYSREF_FMT_TEXT) return;
+	gbuf o;
+	gbuf_init(&o);
+	sysref_render_fmt(res, res->format, &o);
+	gbuf_free(&res->text);
+	res->text = o;
+}
+
+int sysref_run(const char *query, const char *section, const char *source, int page, int per_page, int format, result *res) {
 	memset(res, 0, sizeof *res);
 	gbuf_init(&res->text);
 	if (page < 1) page = 1;
+	res->format=format;
+	res->query=query;
+	res->page=page;
+	res->total_pages=1;
+	res->per_page=per_page;
+	snprintf(res->verb,sizeof res->verb,"man");
 	if (!query || !query[0]) {
 		gbuf_adds(&res->text, "no local man match for empty query\n");
 		res->status = 1;
@@ -1611,9 +1830,9 @@ int sysref_run(const char *query, const char *section, const char *source, int p
 		res->status = 1;
 		return 1;
 	}
-	if (source && strcmp(source, "api") == 0) return sysref_api(query, 1, page, per_page, res);
-	if (source && strcmp(source, "doc") == 0) return sysref_run_doc(query, page, res);
-	if (source && strcmp(source, "headers") == 0) return sysref_api(query, 0, page, per_page, res);
+	if (source && strcmp(source, "api") == 0) return sysref_api(query, 1, page, per_page, format, res);
+	if (source && strcmp(source, "doc") == 0) { snprintf(res->verb,sizeof res->verb,"doc"); return sysref_run_doc(query, page, res); }
+	if (source && strcmp(source, "headers") == 0) return sysref_api(query, 0, page, per_page, format, res);
 	if (source && strcmp(source, "man") != 0) {
 		gbuf_adds(&res->text, "unknown source \"");
 		gbuf_adds(&res->text, source);
@@ -1749,48 +1968,49 @@ int sysref_run(const char *query, const char *section, const char *source, int p
 		gbuf_adds(&res->text, "Not a command? For C symbols use the api tool (--source api); for package docs the doc tool (--source doc).\n");
 		res->status = 2;
 	} else {
-		/* Complete body first, then slice: paging (not silent
-		 * truncation) is what bounds the reply. Page 1 of a short
-		 * body is byte-identical to the old bounded form. */
-		gbuf body;
-		gbuf_init(&body);
-		gbuf_adds(&body, rp.name);
-		gbuf_addch(&body, '(');
-		gbuf_adds(&body, rp.sec);
-		gbuf_adds(&body, ")\n");
-		gbuf_addn(&body, f.a.p, f.a.len);
-		for (int i = 0; i < f.nopt; i++) {
-			range rr = f.opt[i];
-			size_t ub = range_bytes(ls, rr);
-			if (body.len <= SECTION_SANITY_BYTES && ub <= SECTION_SANITY_BYTES - body.len)
-				emit_range(&body, ls, rr.a, rr.b);
-			else {
-				gbuf_adds(&body, "(response truncated at 64KB: narrow the query)\n");
-				break;
-			}
+	/* Complete body first, then slice: paging (not silent
+	 * truncation) is what normally bounds the reply. The full body is
+	 * kept in the result so markdown and json slice the same bytes the
+	 * text path pages; the three formats cannot disagree. */
+	gbuf *body = &res->fullbody;
+	gbuf_adds(body, rp.name);
+	gbuf_addch(body, '(');
+	gbuf_adds(body, rp.sec);
+	gbuf_adds(body, ")\n");
+	gbuf_addn(body, f.a.p, f.a.len);
+	for (int i = 0; i < f.nopt; i++) {
+		range rr = f.opt[i];
+		size_t ub = range_bytes(ls, rr);
+		if (body->len <= SECTION_SANITY_BYTES && ub <= SECTION_SANITY_BYTES - body->len)
+			emit_range(body, ls, rr.a, rr.b);
+		else {
+			gbuf_adds(body, "(response truncated at 64KB: narrow the query)\n");
+			break;
 		}
-		/* The served section was man's default choice, not the agent's:
+	}
+	/* The served section was man's default choice, not the agent's:
 		 * name the alternatives so nothing is silently decided. */
-		if ((!section || !section[0]) && rp.name[0]) {
-			char secs[64];
-			if (man_sections(rp.name, secs, sizeof secs) > 1) {
-				gbuf_adds(&body, "Also manual sections: ");
-				gbuf_adds(&body, secs);
-				gbuf_adds(&body, ". Narrow with -s N.\n");
-			}
+	if ((!section || !section[0]) && rp.name[0]) {
+		char secs[64];
+		if (man_sections(rp.name, secs, sizeof secs) > 1) {
+			snprintf(res->man_altsec, sizeof res->man_altsec, "%s", secs);
+			gbuf_adds(body, "Also manual sections: ");
+			gbuf_adds(body, secs);
+			gbuf_adds(body, ". Narrow with -s N.\n");
 		}
-		int bn = 0;
-		line *bls = build_lines(body.p ? body.p : "", body.len, &bn);
-		int total = count_pages(bls, 0, bn);
-		if (page > total) {
-			emit_page_out_of_range(&res->text, page, total);
-			res->status = 1;
-		} else {
-			emit_page_nav(&res->text, page, total);
-			emit_page_body(&res->text, bls, 0, bn, page);
-		}
-		free(bls);
-		gbuf_free(&body);
+	}
+	int bn = 0;
+	line *bls = build_lines(body->p ? body->p : "", body->len, &bn);
+	int total = count_pages(bls, 0, bn);
+	res->total_pages = total < 1 ? 1 : total;
+	if (page > total) {
+		emit_page_out_of_range(&res->text, page, total);
+		res->status = 1;
+	} else {
+		emit_page_nav(&res->text, page, total);
+		emit_page_body(&res->text, bls, 0, bn, page);
+	}
+	free(bls);
 	}
 
 	frag_free(&f);

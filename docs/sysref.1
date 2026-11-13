@@ -67,6 +67,22 @@ Explicitly select the documentation source:
 .BR man " (default), " doc ", " headers ", or " api .
 Forcibly selecting a source never falls back to another one.
 .TP
+.BI \-\-page = N
+Show page N of a multi-page reply (default 1). Pages are deterministic:
+the same query and page always yield the same bytes. A page past the
+last one names the valid range instead of failing silently.
+.TP
+.BI \-\-per-page = N
+Quote N documentation excerpts per api page, 1 to 10 (default 3).
+Applies only with
+.BR "\-\-source api" .
+.TP
+.BI \-\-format = FMT
+Render the reply as
+.BR text " (default), " markdown ", or " json .
+Text is the historical output and stays byte-identical; markdown and json
+render the same collected evidence.
+.TP
 .B \-\-mcp
 Run as a Model Context Protocol (MCP) stdio server.  Speaks JSON-RPC over
 standard input/output and exposes a single tool (see
@@ -151,7 +167,10 @@ under
 .IR /usr/include " and " /usr/local/include
 (SYSREF_INCLUDE_PATH override); documentation is matched locally under
 .IR /usr/share/doc ", " /usr/share/info ", and " /usr/share/man
-(SYSREF_DOC_PATH override) with same-package/version excerpts preferred.
+(SYSREF_DOC_PATH override) and ranked before paging: same-package/version
+first, then code-context matches, then repeated mentions, then concise
+excerpts, with path and line closing the order so pages are deterministic.
+Generated search indexes (searchindex*.js, objects.inv) are never candidates.
 Only quoted local text is evidence; argument descriptions, returns,
 preconditions, side effects, errors and sample invocations not stated there
 are unavailable. Preprocessor branches are retained, never evaluated as active
@@ -176,9 +195,11 @@ feature_test_macros(7). Where a quoted manual states a documented
 signature for the symbol, its parameter list is compared with the header's
 own form position by position (PARAMETERS), so names present only in the
 manual are distinguished from the header text without inventing any.
-Documentation excerpts prefer same-package and code-context matches;
-prose-only matches from other packages are counted but not quoted, and
-total excerpt payload is bounded with the omitted count reported.
+Documentation excerpts are ranked (same-package, code-context, repeated
+mentions, concise first); prose-only matches from other packages are
+counted but not quoted, and matches beyond the ranked excerpt buffer are
+counted with the overflow reported. Pages share one ordering between the
+quoted excerpts and the later-page lookahead.
 Search bounds (file count, read bytes, depth,
 match and reply limits) are reported when reached: a no-match is not an
 exhaustive absence claim. Internal function implementations are out of
@@ -192,7 +213,7 @@ The server identifies as
 and advertises its purpose on initialize as local Linux documentation,
 manual pages and C API reference.
 .PP
-.B  man(query, section?)
+.B  man(query, section?, page?, format?)
 .RS
 Look up Linux manual pages, commands and options.
 .B section
@@ -201,18 +222,37 @@ selects a man section or named section heading.
 is legacy: it accepts
 .BR man ", " doc ", " headers ", or " api
 for compatibility, but new agents use the dedicated tools below.
+.B page
+selects the reply page (default 1).
+.B format
+renders as
+.BR text ", " markdown ", or " json
+(default text); the same evidence is always also returned as structured
+content conforming to the tool's output schema.
 .RE
 .PP
-.B  doc(query)
+.B  doc(query, page?, format?)
 .RS
 Find installed package documentation, guides and examples.
+.B page
+and
+.B format
+behave as for
+.BR man .
 .RE
 .PP
-.B  api(symbol?, header?)
+.B  api(symbol?, header?, page?, per_page?, format?)
 .RS
 Find C declarations, API contracts and header ownership. Either argument
 suffices: a bare symbol searches every configured include root, a bare
 header reports its availability, and both together scope the lookup.
+.B per_page
+quotes 1 to 10 excerpts per page (default 3).
+.B page
+and
+.B format
+behave as for
+.BR man .
 .RE
 .PP
 Roughly 95% or more of the full page bytes is removed per call: results are
@@ -238,6 +278,7 @@ sysref -s 2 open
 sysref --source doc "sudo troubleshooting"
 sysref --source headers "sys/socket connect"
 sysref --source api "stdio.h printf"
+sysref --format json --source api major
 sysref --stats "rsync --delete"
 .fi
 .PP

@@ -24,12 +24,14 @@ def check(ok, name):
     checks += 1
     print('ok', name)
 
-def run(source, *query, expected=0, custom=None, page=None, per_page=None):
+def run(source, *query, expected=0, custom=None, page=None, per_page=None, format=None):
     args = [binary, '--source', source, *query]
     if page is not None:
         args += ['--page', str(page)]
     if per_page is not None:
         args += ['--per-page', str(per_page)]
+    if format is not None:
+        args += ['--format', str(format)]
     p = subprocess.run(args, env=custom or env,
                        capture_output=True, text=True, timeout=30)
     check(p.returncode == expected, f'{source} {query} exit {p.returncode}: {p.stderr}')
@@ -200,6 +202,31 @@ s = run('api', 'big_sym', expected=2, per_page=0)
 check('invalid --per-page value' in s, 'per_page rejects zero')
 s = run('api', 'big_sym', expected=2, per_page=11)
 check('invalid --per-page value' in s, 'per_page rejects above max')
+t = run('api', 'big_sym', expected=1)
+s = run('api', 'big_sym', expected=1, format='json')
+d = json.loads(s)
+check(d['tool'] == 'api' and d['format'] == 'json', 'api json envelope')
+check(d['data']['symbol'] == 'big_sym', 'api json symbol')
+check(d['data']['documentation']['total'] == 4, 'api json totals')
+check(len(d['data']['documentation']['excerpts']) == 3, 'api json window')
+text_paths = [l.split('DOCUMENT: ', 1)[1].rsplit(':', 1)[0]
+              for l in t.splitlines() if l.startswith('DOCUMENT: ')]
+check(text_paths == [e['path'] for e in d['data']['documentation']['excerpts']],
+      'text and json share excerpt order')
+check(d['data']['status'] == {'declaration_found': False, 'documentation_found': True}, 'api json status')
+check(d['page'] == 1 and d['total_pages'] == 2 and d['next_page'] == 2, 'api json pagination')
+s = run('api', 'big_sym', expected=1, format='markdown')
+check(s.startswith('# `big_sym`'), 'api markdown heading')
+check(s.count('```\n') >= 2, 'api markdown fenced excerpts')
+check('DOCUMENTATION: 4 local excerpt(s) total, 3 quoted on this page.' in s, 'api markdown counts')
+m = run('api', 'mpfr_subnormalize', format='markdown')
+check('```c' in m and signature in m, 'api markdown fenced declaration')
+j = json.loads(run('api', 'mpfr_subnormalize', format='json'))
+check(j['data']['kind']['category'] == 'function', 'api json kind')
+check(j['data']['package'] is not None and 'fixture-dev' in j['data']['package']['owner'], 'api json package')
+check(j['data']['header']['line'] == 4, 'api json header line')
+check(j['data']['declarations'][0]['text'] == signature, 'api json declaration text')
+check(j['data']['parameters']['header_form'] is not None, 'api json parameters captured')
 s = run('man', 'demo', expected=2, per_page=5)
 check('--per-page applies only to --source api' in s, 'per_page scoped to api')
 for i in (1, 2, 3, 4):
@@ -210,12 +237,66 @@ s = run('doc', 'fixture', expected=1, page=2)
 check('out of range (1-1)' in s, 'doc map out of range names valid range')
 s = run('man', 'demo', expected=2, page=0)
 check('invalid --page value' in s, 'invalid page rejected')
+s = run('doc', 'fixture', format='json')
+d = json.loads(s)
+check(d['tool'] == 'doc' and d['data']['mode'] == 'map', 'doc map json envelope')
+check('README.md' in d['data']['files'], 'doc map json files')
+s = run('doc', 'fixture', format='markdown')
+check(s.startswith('# fixture (doc)') and '- README.md' in s, 'doc map markdown')
+s = run('doc', 'fixture', 'fixture_symbol', format='json')
+d = json.loads(s)
+check(d['data']['mode'] == 'excerpt' and 'documented operation' in d['data']['paragraph'], 'doc term json paragraph')
+check(d['data']['file'] == 'README.md', 'doc term json file')
 (docs / 'same-package.txt').write_text('mpfr_subnormalize has a fixture contract.\n')
 check('same installed package/version' in run('api', 'mpfr_subnormalize'), 'version-associated local reference')
 (docs / 'same-package.txt').unlink()
 (docs / 'widget-doc.txt').write_text('widget_open has a fixture contract.\nextern int\nwidget_open(\n int fd,\n int flags\n);\n')
 check('PARAMETERS: header and documented forms agree.' in run('api', 'widget.h', 'widget_open'), 'parameters agree when doc quotes header form')
 (docs / 'widget-doc.txt').unlink()
+
+# Ranking: one ordering feeds excerpts and lookahead. Fixture names sort
+# against the expected rank, so walk order cannot fake these assertions.
+(inc / 'rank.h').write_text('int rank_sym(int);\n')
+(docs / 'a-foreign.txt').write_text('rank_sym(x) works here.\n')
+(docs / 'z-own.txt').write_text('rank_sym(fd) is documented.\n')
+s = run('api', 'rank.h', 'rank_sym')
+check(s.index('z-own') < s.index('a-foreign'), 'same-package excerpt outranks foreign')
+(docs / 'a-prose.txt').write_text('lon_sym is great.\n')
+(docs / 'z-code.txt').write_text('lon_sym(x) works.\n')
+s = run('api', 'lon_sym', expected=1)
+check(s.index('z-code') < s.index('a-prose'), 'code context outranks prose')
+(docs / 'a-long.txt').write_text('len_sym(x) ' + 'p' * 600 + '\n')
+(docs / 'z-short.txt').write_text('len_sym(x) ok.\n')
+s = run('api', 'len_sym', expected=1)
+check(s.index('z-short') < s.index('a-long'), 'concise excerpt outranks table')
+(docs / 'a-once.txt').write_text('rep_sym(x) here.\n')
+(docs / 'z-thrice.txt').write_text('rep_sym(x) and rep_sym and rep_sym done.\n')
+s = run('api', 'rep_sym', expected=1)
+check(s.index('z-thrice') < s.index('a-once'), 'denser excerpt outranks single mention')
+for f in ('a-foreign.txt', 'z-own.txt', 'a-prose.txt', 'z-code.txt', 'a-long.txt',
+          'z-short.txt', 'a-once.txt', 'z-thrice.txt'):
+    (docs / f).unlink()
+(inc / 'rank.h').unlink()
+
+# Generated search indexes match every term by construction and explain
+# nothing: excluded from excerpt candidates and the doc map alike.
+(docs / 'searchindex-zzz.js').write_text('idx_sym appears in this generated index.\n')
+(docs / 'objects.inv').write_text('idx_sym appears in this inventory.\n')
+(docs / 'real.txt').write_text('idx_sym documented here.\n')
+s = run('api', 'idx_sym', expected=1)
+check('searchindex' not in s and 'objects.inv' not in s, 'generated indexes excluded from excerpts')
+check(s.count('DOCUMENT: ') == 1, 'only the real excerpt quoted')
+(docs / 'searchindex-zzz.js').unlink()
+(docs / 'objects.inv').unlink()
+(docs / 'real.txt').unlink()
+(docs / 'exclpkg').mkdir()
+(docs / 'exclpkg' / 'README.md').write_text('# hi\n')
+(docs / 'exclpkg' / 'searchindex-a.js').write_text('x\n')
+s = run('doc', 'exclpkg')
+check('searchindex' not in s and 'README.md' in s, 'generated indexes excluded from doc map')
+(docs / 'exclpkg' / 'README.md').unlink()
+(docs / 'exclpkg' / 'searchindex-a.js').unlink()
+(docs / 'exclpkg').rmdir()
 
 # Exact-duplicate excerpts add no information: only the first is quoted.
 (docs / 'dup-a.txt').write_text('dupe_sym has a duplicated fixture contract.\n')
@@ -250,6 +331,17 @@ s = run('man', 'demo')
 check('page=1' in s and 'total_pages=1' in s, 'man page navigation')
 s = run('man', 'demo', expected=1, page=2)
 check('out of range (1-1)' in s, 'man page out of range names valid range')
+s = run('man', 'demo', format='markdown')
+check(s.startswith('# demo(1)'), 'man markdown heading')
+check('```\n' in s and 'SYNOPSIS' in s, 'man markdown fenced body')
+check('*Page 1 of 1*' in s, 'man markdown navigation')
+s = run('man', 'demo', format='json')
+d = json.loads(s)
+check(d['tool'] == 'man' and d['page'] == 1 and d['format'] == 'json', 'man json envelope')
+check(d['data']['page_name'] == 'demo' and 'SYNOPSIS' in d['data']['body'], 'man json body')
+check(d['data']['sections_available'] is None, 'man json null when no alternative sections')
+s = run('man', 'demo', expected=2, format='bogus')
+check('invalid --format value' in s, 'invalid format rejected')
 
 # Three discoverable MCP tools sharing one handler, framed and newline transports.
 def rpc(method, params=None, framed=False):
@@ -286,6 +378,18 @@ response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subno
 check('out of range' in response['result']['content'][0]['text'], 'MCP api page out of range')
 response = rpc('tools/call', {'name': 'doc', 'arguments': {'query': 'fixture', 'page': 'two'}})
 check('error' in response, 'MCP page rejects non-integer')
+check('outputSchema' in by_name['api'] and 'outputSchema' in by_name['man'], 'tools declare output schemas')
+response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize', 'format': 'json'}})
+body = response['result']['content'][0]['text']
+sc = response['result']['structuredContent']
+check(json.loads(body) == sc, 'structured content matches text rendering')
+check(sc['data']['symbol'] == 'mpfr_subnormalize' and sc['format'] == 'json', 'structured api fields')
+check('structuredContent' in rpc('tools/call', {'name': 'man', 'arguments': {'query': 'demo'}})['result'],
+      'structured content rides default text calls')
+response = rpc('tools/call', {'name': 'doc', 'arguments': {'query': 'fixture fixture_symbol', 'format': 'markdown'}})
+check(response['result']['content'][0]['text'].startswith('# fixture (doc)'), 'MCP markdown rendering')
+response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize', 'format': 'xml'}})
+check('error' in response, 'MCP format rejects unknown rendering')
 response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize', 'per_page': 99}})
 check('error' in response, 'MCP per_page rejects above max')
 response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize', 'per_page': 'many'}})
@@ -317,6 +421,12 @@ try:
     conn.request('POST', '/mcp', req, {'Authorization': 'Bearer fixture-key'})
     response = conn.getresponse()
     check(response.status == 200 and signature in json.loads(response.read())['result']['content'][0]['text'], 'HTTP api tool and existing bearer auth')
+    req = json.dumps(dict(jsonrpc='2.0', id=3, method='tools/call', params=dict(name='api', arguments=dict(symbol='mpfr_subnormalize', format='json'))))
+    conn.request('POST', '/mcp', req, {'Authorization': 'Bearer fixture-key'})
+    response = conn.getresponse()
+    d = json.loads(response.read())
+    check(response.status == 200 and d['result']['structuredContent']['data']['symbol'] == 'mpfr_subnormalize', 'HTTP json structured result')
+    check(d['result']['structuredContent'] == json.loads(d['result']['content'][0]['text']), 'HTTP text and structured agree')
     conn.close()
 finally:
     server.terminate()

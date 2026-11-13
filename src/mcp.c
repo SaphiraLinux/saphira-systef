@@ -132,6 +132,7 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		jv *starg = args ? jv_get(args, "stats") : NULL;
 		jv *pg = args ? jv_get(args, "page") : NULL;
 		jv *pp = args ? jv_get(args, "per_page") : NULL;
+		jv *fmt = args ? jv_get(args, "format") : NULL;
 		/* jv: t==1 is bool and the value lives in .b (not .num). A stringified
 		 * boolean is accepted too, because an agent that stringifies its
 		 * arguments should get the metrics rather than a silent no-op. */
@@ -164,6 +165,25 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 				return 1;
 			}
 			per_page = (int)pp->num;
+		}
+		/* format is optional (default text); a present format must name
+		 * one of the three renderings. The JSON rendering is also
+		 * returned as standard structuredContent, never only as text. */
+		int format = SYSREF_FMT_TEXT;
+		if (fmt) {
+			if (fmt->t != 3 || !fmt->str) {
+				jsonrpc_error(resp, id->raw, id->rawlen, -32602, "invalid format (text, markdown or json required)");
+				jv_free(root);
+				return 1;
+			}
+			if (strcmp(fmt->str, "text") == 0) format = SYSREF_FMT_TEXT;
+			else if (strcmp(fmt->str, "markdown") == 0) format = SYSREF_FMT_MARKDOWN;
+			else if (strcmp(fmt->str, "json") == 0) format = SYSREF_FMT_JSON;
+			else {
+				jsonrpc_error(resp, id->raw, id->rawlen, -32602, "invalid format (text, markdown or json required)");
+				jv_free(root);
+				return 1;
+			}
 		}
 		if (!name || name->t != 3 || !name->str ||
 		    (strcmp(name->str, "man") != 0 && strcmp(name->str, "doc") != 0 &&
@@ -203,10 +223,11 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		}
 		result res;
 		memset(&res, 0, sizeof res);
-		if (!is_man && !is_doc) sysref_api(apiq, 1, page, per_page, &res);
-		else if (is_doc) sysref_run(q->str, NULL, "doc", page, 3, &res);
+		if (!is_man && !is_doc) sysref_api(apiq, 1, page, per_page, format, &res);
+		else if (is_doc) sysref_run(q->str, NULL, "doc", page, 3, format, &res);
 		else sysref_run(q->str, (sec && sec->str) ? sec->str : NULL,
-		           (src && src->str) ? src->str : NULL, page, per_page, &res);
+		           (src && src->str) ? src->str : NULL, page, per_page, format, &res);
+		sysref_render(&res);
 		/* Opt-in metrics footer. Default output is untouched, so the common
 		 * case pays nothing for this. The point is that an agent can hold
 		 * this tool's central claim -- that it returns a fraction of a page --
@@ -256,7 +277,23 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		gbuf_init(&txt);
 		gbuf_adds(&txt, "{\"content\":[{\"type\":\"text\",\"text\":");
 		json_escape(&txt, res.text.p ? res.text.p : "", res.text.len);
-		gbuf_adds(&txt, "}],\"isError\":false}");
+		gbuf_adds(&txt, "}],\"isError\":false");
+		/* Standard structured result: the same evidence, always shipped
+		 * parsed as structuredContent alongside the human text. For a
+		 * json-format call the two are byte-identical views. */
+		gbuf js;
+		gbuf_init(&js);
+		if (format == SYSREF_FMT_JSON && res.text.p) {
+			gbuf_addn(&js, res.text.p, res.text.len);
+		} else {
+			sysref_render_fmt(&res, SYSREF_FMT_JSON, &js);
+		}
+		if (js.p) {
+			gbuf_adds(&txt, ",\"structuredContent\":");
+			gbuf_addn(&txt, js.p, js.len);
+		}
+		gbuf_free(&js);
+		gbuf_adds(&txt, "}");
 		jsonrpc_result(resp, id->raw, id->rawlen, txt.p);
 		gbuf_free(&txt);
 		result_free(&res);
@@ -616,7 +653,7 @@ int run_bench(void) {
 		if (cases[i].s && strcmp(cases[i].s, "doc") == 0) src = "doc";
 		else if (cases[i].s && strcmp(cases[i].s, "headers") == 0) src = "headers";
 		const char *sec = src ? NULL : cases[i].s;
-		int st = sysref_run(cases[i].q, sec, src, 1, 3, &res);
+		int st = sysref_run(cases[i].q, sec, src, 1, 3, SYSREF_FMT_TEXT, &res);
 		char page[160];
 		snprintf(page, sizeof page, "%s(%s)", res.pagename, res.pagesec);
 		size_t ft = EST_TOKENS(res.full_bytes);

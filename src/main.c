@@ -18,6 +18,16 @@ static int parse_page(const char *s) {
 	return (int)v;
 }
 
+/* text is the historical default; markdown and json render the same
+ * collected evidence. Anything else is rejected, not guessed. */
+static int parse_format(const char *s) {
+	if (!s) return -1;
+	if (strcmp(s, "text") == 0) return SYSREF_FMT_TEXT;
+	if (strcmp(s, "markdown") == 0) return SYSREF_FMT_MARKDOWN;
+	if (strcmp(s, "json") == 0) return SYSREF_FMT_JSON;
+	return -1;
+}
+
 static const char *usage =
     "sysref - minimal local man-page context for AI agents\n"
     "\n"
@@ -36,6 +46,7 @@ static const char *usage =
     "  sysref --conf PATH             config file path (APIKEY for webMCP)\n"
     "  sysref --page N                  show page N of a multi-page reply (default 1)\n"
     "  sysref --per-page N              api excerpts per page, 1-10 (default 3)\n"
+    "  sysref --format F              text, markdown or json (default text)\n"
     "  sysref --bench                 benchmark table\n"
     "\n"
     "  QUERY forms: command [option] | command [section-name] | command subcommand\n"
@@ -70,6 +81,7 @@ int main(int argc, char **argv) {
 	int page = 1;
 	int per_page = 3;
 	int per_page_given = 0;
+	int format = SYSREF_FMT_TEXT;
 
 	for (int i = 1; i < argc; i++) {
 		char *a = argv[i];
@@ -92,6 +104,12 @@ int main(int argc, char **argv) {
 			per_page = parse_page(argv[++i]);
 			per_page_given = 1;
 			if (per_page < 1 || per_page > 10) { fputs("sysref: invalid --per-page value (integer 1-10 required)\n", stderr); return 2; }
+		} else if (strncmp(a, "--format=", 9) == 0) {
+			format = parse_format(a + 9);
+			if (format < 0) { fputs("sysref: invalid --format value (text, markdown or json required)\n", stderr); return 2; }
+		} else if (strcmp(a, "--format") == 0 && i + 1 < argc) {
+			format = parse_format(argv[++i]);
+			if (format < 0) { fputs("sysref: invalid --format value (text, markdown or json required)\n", stderr); return 2; }
 		}
 		else if (strcmp(a, "--conf") == 0 && i + 1 < argc) conf = argv[++i];
 		else if (strcmp(a, "--web") == 0 || strcmp(a, "--http") == 0) {
@@ -149,7 +167,8 @@ int main(int argc, char **argv) {
 
 	result res;
 	memset(&res, 0, sizeof res);
-	int st = sysref_run(query, section, source, page, per_page, &res);
+	int st = sysref_run(query, section, source, page, per_page, format, &res);
+	sysref_render(&res);
 	if (res.text.p) write(1, res.text.p, res.text.len);
 	if (stats) {
 		double reduction = res.full_bytes ? 100.0 * (1.0 - (double)res.text.len / (double)res.full_bytes) : 0.0;
