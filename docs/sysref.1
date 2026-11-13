@@ -154,6 +154,21 @@ preconditions, side effects, errors and examples not stated there are
 unavailable. Preprocessor branches are retained, never evaluated as active
 configuration. Package ownership is reported from local metadata only; no
 installation is performed and no package is inferred.
+.PP
+A bare-symbol query needs no filename: every configured include root is
+searched (for example
+.BR "sysref --source api mpfr_subnormalize" ).
+The reply is a lifecycle block: SYMBOL, declaration SOURCE with file and
+line, HEADER with file and line, PACKAGE owner/version from local metadata
+(or unknown), verbatim DOCUMENT excerpts with Info/HTML/compressed manuals
+included and HTML tags stripped, then DOCUMENTATION availability,
+ARGUMENTS availability, STATUS, and a Detailed-local-manual line that is
+explicit when no manual exists. A signature alone never establishes argument
+meaning; when documentation is unavailable the agent is told so rather than
+left to infer from types. Search bounds (file count, read bytes, depth,
+match and reply limits) are reported when reached: a no-match is not an
+exhaustive absence claim. Internal function implementations are out of
+scope: headers and manuals describe the API contract, not the algorithm.
 .SH MCP
 In MCP mode
 .B sysref
