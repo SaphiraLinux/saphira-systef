@@ -40,10 +40,18 @@ typedef struct {
   char curguard[3][96];
   int ncurguard;
   char guard[300];
+  /* Installed-package owner of the declaration header, when local
+   * metadata establishes it; gates prose-match suppression. */
+  char pkg[256];
+  int pkg_known;
   /* Whitespace-normalized hashes of emitted excerpts: exact duplicates
    * across files add no information and are skipped, not counted. */
   unsigned long seen[32];
   int nseen;
+  /* Suppressed low-relevance matches and excerpt bytes emitted: bounded
+   * progressive disclosure with an honest count. */
+  int skipped;
+  size_t xbytes;
 } search;
 static int ident(int c) { return isalnum((unsigned char)c) || c == '_'; }
 static int symbol_ok(const char *s) {
@@ -276,6 +284,12 @@ static int same_owner(const char *header, const char *doc);
 static int is_html(const char *path);
 static void excerpt_add(gbuf *out, const char *p, size_t n, int html);
 static unsigned long excerpt_hash(const char *p, size_t n);
+static int code_context(const char *p, size_t pos, size_t n, size_t sl);
+static int mentions_feature_test(const char *g);
+/* Total excerpt payload budget: bounded progressive disclosure. Same-owner
+ * and code-context matches are ordered first, so the budget binds last,
+ * never first. */
+#define EXCERPT_BUDGET (2048u)
 static void docs_visit(search *s,const char *path) {
  const char *name=strrchr(path,'/'); name=name?name+1:path;
  /* Man trees contain thousands of compressed files: function-name pages
@@ -306,6 +320,22 @@ static void docs_visit(search *s,const char *path) {
      for (int d=0;d<s->nseen;d++) if (s->seen[d]==h) { dup=1; break; }
      if (dup) break;
      if (s->nseen<32) s->seen[s->nseen++]=h;
+     /* Prose-only match from a foreign package is provably not the
+      * contract: same-package and code-context matches pass through,
+      * but prose about "major versions" is counted, not quoted.
+      * Suppression needs proven foreignness (header owner known). */
+     size_t sl=strlen(s->symbol);
+     int code=0;
+     for (size_t k=i;k+sl<=stop;k++) {
+      if (!memcmp(b.p+k,s->symbol,sl) &&
+          (k==0 || !ident(b.p[k-1])) && (k+sl==stop || !ident(b.p[k+sl]))) {
+       if (code_context(b.p,k,stop,sl)) { code=1; break; }
+      }
+     }
+     if (!matched_owner && s->pkg_known && !code) { s->skipped++; break; }
+     size_t xlen = stop-i>1500 ? 1500 : stop-i;
+     if (s->xbytes + xlen > EXCERPT_BUDGET) { s->skipped++; break; }
+     s->xbytes += xlen;
     }
     s->docs++;
     if(s->docs<=3 && s->res->text.len<REPLY_LIMIT) {
@@ -422,6 +452,30 @@ static unsigned long excerpt_hash(const char *p, size_t n) {
   h=((h<<5)+h)+c;
  }
  return h;
+}
+/* Code-adjacent occurrence? A symbol glued to punctuation or parens reads
+ * as code; one wrapped in prose words on both sides reads as English.
+ * Lexical adjacency only, never a judgment about meaning. */
+static int code_context(const char *p, size_t pos, size_t n, size_t sl) {
+ static const char codechars[] = "()[],;{}=:#*&<>\"'`/@+-";
+ size_t j=pos+sl;
+ while (j<n && isspace((unsigned char)p[j])) j++;
+ if (j<n && strchr(codechars,p[j])) return 1;
+ size_t k=pos;
+ while (k>0 && isspace((unsigned char)p[k-1])) k--;
+ if (k>0 && strchr(codechars,p[k-1])) return 1;
+ return 0;
+}
+/* Feature-test-macro vocabulary, matched literally against a guard line.
+ * Presence only earns a pointer to the manual, never a claim about which
+ * macro the declaration needs. */
+static int mentions_feature_test(const char *g) {
+ static const char *words[] = {
+  "_GNU_SOURCE","_USE_","_POSIX_","_XOPEN_","_DEFAULT_SOURCE","_STRICT_ANSI",
+  "_BSD_SOURCE","_SVID_SOURCE","_ATFILE_SOURCE","_LARGEFILE","_FILE_OFFSET_BITS",
+  "_ISOC","_DYNAMIC","_REENTRANT","_THREAD_SAFE","__STDC_WANT_",NULL};
+ for (int i=0;words[i];i++) if (strstr(g,words[i])) return 1;
+  return 0;
 }
 static void excerpt_add(gbuf *out, const char *p, size_t n, int html) {
  if(!html) { gbuf_addn(out,p,n); return; }
@@ -594,18 +648,22 @@ int sysref_api(const char *query, int semantics, result *res) {
    }
    gbuf_addch(&res->text,'\n');
   }
-  if (s.matches && s.guard[0]) {
-   gbuf_adds(&res->text,"GUARDED BY: "); gbuf_adds(&res->text,s.guard); gbuf_addch(&res->text,'\n');
-  }
-  /* Declared location and owning package first: the agent sees what was
-   * found and where before the longer documentation excerpts. */
-  if(semantics && s.matches) {
-   char pkg[256], ln[32];
-   snprintf(ln,sizeof ln,":%d\n",s.first_line);
-   gbuf_adds(&res->text,"HEADER: "); gbuf_adds(&res->text,s.first); gbuf_adds(&res->text,ln);
-   if(header_owner(s.first,pkg,sizeof pkg)) { gbuf_adds(&res->text,"PACKAGE: "); gbuf_adds(&res->text,pkg); gbuf_addch(&res->text,'\n'); }
-   else gbuf_adds(&res->text,"PACKAGE: unknown from local metadata.\n");
-  }
+   if (s.matches && s.guard[0]) {
+    gbuf_adds(&res->text,"GUARDED BY: "); gbuf_adds(&res->text,s.guard); gbuf_addch(&res->text,'\n');
+    if (mentions_feature_test(s.guard))
+     gbuf_adds(&res->text,"Possible feature-test requirement: see feature_test_macros(7); guards above are quoted, not evaluated.\n");
+   }
+   /* Declared location and owning package first: the agent sees what was
+    * found and where before the longer documentation excerpts. Ownership
+    * is established once here and reused for prose-match suppression. */
+   if(semantics && s.matches) {
+    char ln[32];
+    snprintf(ln,sizeof ln,":%d\n",s.first_line);
+    gbuf_adds(&res->text,"HEADER: "); gbuf_adds(&res->text,s.first); gbuf_adds(&res->text,ln);
+    s.pkg_known = header_owner(s.first,s.pkg,sizeof s.pkg);
+    if(s.pkg_known) { gbuf_adds(&res->text,"PACKAGE: "); gbuf_adds(&res->text,s.pkg); gbuf_addch(&res->text,'\n'); }
+    else gbuf_adds(&res->text,"PACKAGE: unknown from local metadata.\n");
+   }
  if(semantics) {
   s.files=0; s.readbytes=0;
   const char *dr=root("SYSREF_DOC_PATH","/usr/share/doc:/usr/local/share/doc:/usr/share/info:/usr/share/man");
@@ -624,8 +682,9 @@ int sysref_api(const char *query, int semantics, result *res) {
    /* Lifecycle block: concise evidence-first summary. A signature alone
     * cannot establish argument meaning; the agent must see whether
     * authoritative local documentation exists before inferring behaviour. */
-   if(!s.docs) gbuf_adds(&res->text,"DOCUMENTATION: unavailable in searched files (not proof that a documentation package exists).\n");
-   else { char dn[64]; snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) quoted above.\n",s.docs); gbuf_adds(&res->text,dn); }
+    if(!s.docs) gbuf_adds(&res->text,"DOCUMENTATION: unavailable in searched files (not proof that a documentation package exists).\n");
+    else { char dn[64]; snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) quoted above.\n",s.docs); gbuf_adds(&res->text,dn); }
+    if(s.skipped>0) { char sb[160]; snprintf(sb,sizeof sb,"Omitted %d low-relevance match(es) (prose-only from other packages or excerpt budget); narrow with source=doc and the package name.\n",s.skipped); gbuf_adds(&res->text,sb); }
    if(semantics && s.matches) parameters_block(&s);
    if(s.docs) gbuf_adds(&res->text,"ARGUMENTS: described only where quoted above; no separate parameter table inferred from types.\n");
    else gbuf_adds(&res->text,"ARGUMENTS: unavailable -- no local documentation names the parameters; do not infer from types.\n");

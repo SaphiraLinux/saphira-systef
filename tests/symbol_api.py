@@ -99,6 +99,7 @@ s = run('api', 'WIDGET_VERSION')
 check('KIND: object-like macro' in s, 'object-like macro kind')
 s = run('api', 'guard.h', 'guarded_open')
 check('GUARDED BY: #ifdef __USE_GUARD' in s, 'conditional guard quoted verbatim')
+check('feature_test_macros(7)' in s, 'feature-test manual cross-referenced')
 
 (docs / 'mpfr-4.2').mkdir()
 (docs / 'mpfr-4.2' / 'api.md').write_text('# mpfr_subnormalize\nint mpfr_subnormalize (mpfr_t X, int T, mpfr_rnd_t RND)\nArguments: x is rounded.\nReturn: documented ternary result.\n\nUnrelated text.\n')
@@ -134,7 +135,9 @@ s = run('api', 'mpfr_subnormalize', expected=1, custom=dict(env, SYSREF_INCLUDE_
 check('missing development package versus absent library unresolved' in s, 'system without MPFR')
 
 # Adapter commands are stubs: prove exact ownership/file lookup, never install.
-(helpers / 'pacman').write_text('#!/bin/sh\ncase "$1" in\n-Qo) echo "$2 is owned by fixture-dev 1.2";;\n-F) echo "fixture-dev 1.2"; echo " usr/include/absent.h";;\n*) exit 1;;\nesac\n')
+# Paths containing "foreign" resolve to a different owner so suppression
+# (prose-only match from another package) is exercisable in-fixture.
+(helpers / 'pacman').write_text('#!/bin/sh\ncase "$1" in\n-Qo) case "$2" in\n*foreign*) echo "$2 is owned by other-pkg 9.9";;\n*) echo "$2 is owned by fixture-dev 1.2";;\nesac;;\n-F) echo "fixture-dev 1.2"; echo " usr/include/absent.h";;\n*) exit 1;;\nesac\n')
 (helpers / 'pacman').chmod(0o755)
 s = run('api', 'mpfr_subnormalize')
 check('fixture-dev 1.2' in s and 'not documentation provider' in s, 'verified owner/version distinct from docs provider')
@@ -156,10 +159,25 @@ s = run('api', 'mpfr_subnormalize', expected=1, custom=dict(env, SYSREF_INCLUDE_
 check('runtime library is installed' in s and 'Development declaration unavailable' in s, 'runtime installed development header missing')
 (lib / 'libfixture.so.1').unlink()
 # A verified cached file listing establishes a doc provider without assuming -doc.
-(helpers / 'pacman').write_text('#!/bin/sh\ncase "$1" in\n-Qo) echo "$2 is owned by fixture-dev 1.2";;\n-F) echo "reference-manuals 1.2"; echo " usr/share/man/man3/mpfr_subnormalize.3.gz";;\n*) exit 1;;\nesac\n')
+(helpers / 'pacman').write_text('#!/bin/sh\ncase "$1" in\n-Qo) case "$2" in\n*foreign*) echo "$2 is owned by other-pkg 9.9";;\n*) echo "$2 is owned by fixture-dev 1.2";;\nesac;;\n-F) echo "reference-manuals 1.2"; echo " usr/share/man/man3/mpfr_subnormalize.3.gz";;\n*) exit 1;;\nesac\n')
 s = run('api', 'mpfr_subnormalize')
 check('DOCUMENTATION FILE PROVIDER' in s and 'reference-manuals' in s, 'missing documentation provider from cached file list')
 check('installation state unknown' in s, 'doc package absence not inferred from missing file')
+(docs / 'foreign-prose.txt').write_text('The widget_open routine is fast and reliable.\n')
+(docs / 'foreign-code.txt').write_text('widget_open(fd, flags) works here.\n')
+s = run('api', 'widget.h', 'widget_open')
+check('fast and reliable' not in s, 'foreign prose match suppressed, not quoted')
+check('widget_open(fd, flags)' in s, 'foreign code-context match still quoted')
+check('Omitted 1 low-relevance' in s and 'prose-only from other packages' in s, 'suppression reported with count')
+(docs / 'foreign-prose.txt').unlink()
+(docs / 'foreign-code.txt').unlink()
+for i, pad in ((1, 'a'), (2, 'b'), (3, 'c')):
+    (docs / f'big{i}.txt').write_text('big_sym ' + pad * 680 + '\n')
+s = run('api', 'big_sym', expected=1)
+check(s.count('DOCUMENT: ') == 2, 'excerpt budget binds before the third match')
+check('Omitted 1' in s, 'budget omission reported')
+for i in (1, 2, 3):
+    (docs / f'big{i}.txt').unlink()
 (docs / 'same-package.txt').write_text('mpfr_subnormalize has a fixture contract.\n')
 check('same installed package/version' in run('api', 'mpfr_subnormalize'), 'version-associated local reference')
 (docs / 'same-package.txt').unlink()

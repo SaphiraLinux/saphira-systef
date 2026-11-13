@@ -171,10 +171,14 @@ left to infer from types. The declaration's kind is stated plainly:
 function-like and object-like macros (which have no address to take),
 plain functions, and any static/inline/extern keywords literally present.
 Enclosing conditional-compilation guards are quoted verbatim where present,
-never evaluated. Where a quoted manual states a documented
+never evaluated; guards mentioning feature-test vocabulary point at
+feature_test_macros(7). Where a quoted manual states a documented
 signature for the symbol, its parameter list is compared with the header's
 own form position by position (PARAMETERS), so names present only in the
 manual are distinguished from the header text without inventing any.
+Documentation excerpts prefer same-package and code-context matches;
+prose-only matches from other packages are counted but not quoted, and
+total excerpt payload is bounded with the omitted count reported.
 Search bounds (file count, read bytes, depth,
 match and reply limits) are reported when reached: a no-match is not an
 exhaustive absence claim. Internal function implementations are out of
