@@ -28,6 +28,10 @@ typedef struct {
   int candidates;
   char first[PATH_MAX];
   int first_line;
+  /* Header's own parenthesized form and a documented signature line, both
+   * captured verbatim for the PARAMETERS comparison. No parsing of types. */
+  char declparams[512];
+  char docform[512];
 } search;
 static int ident(int c) { return isalnum((unsigned char)c) || c == '_'; }
 static int symbol_ok(const char *s) {
@@ -123,6 +127,19 @@ static void declaration(search *s, const char *path, const char *raw, const char
  if (a==b || !declares(m+a,b-a,s->symbol,macro)) return;
   s->matches++;
   if (!s->first[0]) { snprintf(s->first,sizeof s->first,"%s",path); s->first_line=ln; }
+  if (!s->declparams[0]) {
+   /* First parenthesized group in the masked span: comments and literals
+    * are already blanked there, so this is lexical bracket matching on
+    * code text, never a parse of the declarator. */
+   for (size_t k=a;k<b;k++) if (m[k]=='(') {
+    int depth=0; size_t e=k;
+    for (;e<b && e-k<480;e++) {
+     if (m[e]=='(') depth++; else if (m[e]==')' && --depth==0) break;
+    }
+    if (e<b && m[e]==')') { size_t n=e-k+1; memcpy(s->declparams,raw+k,n); s->declparams[n]=0; }
+    break;
+   }
+  }
  if (s->matches>MATCH_LIMIT || s->res->text.len>REPLY_LIMIT) return;
  ref(&s->res->text,"SOURCE: ",path,ln);
  if (b-a>1500) { gbuf_adds(&s->res->text,"DECLARATION: exceeds 1500 bytes; inspect source at this line.\n\n"); s->oversized++; return; }
@@ -211,6 +228,25 @@ static void docs_visit(search *s,const char *path) {
     if(stop-i>1200) stop=end;
     if(stop-i<=1500) excerpt_add(&s->res->text,b.p+i,stop-i,is_html(path));
     else gbuf_adds(&s->res->text,"Matching line exceeds excerpt budget; inspect source.\n");
+    if (!s->docform[0]) {
+     /* Documented signature: the symbol word followed by a parenthesized
+      * list inside the quoted excerpt (e.g. a texinfo Function line).
+      * Captured verbatim; never reconciled by parsing. */
+     size_t sl=strlen(s->symbol);
+     for (size_t k=i;k<stop && !s->docform[0];k++) {
+      if (k+sl<stop && !memcmp(b.p+k,s->symbol,sl) &&
+          (k==0 || !ident(b.p[k-1])) && (k+sl==stop || (!ident(b.p[k+sl]) && b.p[k+sl]!='_'))) {
+       size_t p=k+sl; while (p<stop && isspace((unsigned char)b.p[p])) p++;
+       if (p<stop && b.p[p]=='(') {
+        int depth=0; size_t e=p;
+        for (;e<stop && e-p<480;e++) {
+         if (b.p[e]=='(') depth++; else if (b.p[e]==')' && --depth==0) break;
+        }
+        if (e<stop && b.p[e]==')') { size_t n=e-k+1; memcpy(s->docform,b.p+k,n); s->docform[n]=0; }
+       }
+      }
+     }
+    }
     gbuf_adds(&s->res->text,"\n");
    }
    break;
@@ -317,6 +353,80 @@ static int header_owner(const char *header, char *out, size_t n) {
  }
  return 0;
 }
+/* Compare header vs documented parameter forms without parsing either side:
+ * whitespace-insensitive whole-list equality, else a positional table over
+ * top-level comma segments, else a verbatim whole-list fallback. Type
+ * knowledge is never consulted; names are never invented. */
+static int stripped_equal(const char *a, const char *b) {
+ for (;;) {
+  while (*a && isspace((unsigned char)*a)) a++;
+  while (*b && isspace((unsigned char)*b)) b++;
+  if (*a != *b) return 0;
+  if (!*a) return 1;
+  a++; b++;
+ }
+}
+static int split_params(const char *s, char out[][160], int max) {
+ size_t n=strlen(s);
+ if (n < 2 || s[0] != '(' || max <= 0) return -1;
+ int depth=0, seg=0; size_t start=1;
+ for (size_t i=0;i<n;i++) {
+  if (s[i] == '(') depth++;
+  else if (s[i] == ')') {
+   if (--depth < 0) return -1;
+   if (depth == 0) {
+    if (seg >= max) return -1;
+    size_t a=start, b=i;
+    while (a<b && isspace((unsigned char)s[a])) a++;
+    while (b>a && isspace((unsigned char)s[b-1])) b--;
+    size_t len=b-a; if (len>159) len=159;
+    memcpy(out[seg],s+a,len); out[seg][len]=0; seg++;
+    return (seg==1 && out[0][0]==0) ? 0 : seg;
+   }
+  } else if (s[i] == ',' && depth == 1) {
+   if (seg >= max) return -1;
+   size_t a=start, b=i;
+   while (a<b && isspace((unsigned char)s[a])) a++;
+   while (b>a && isspace((unsigned char)s[b-1])) b--;
+   size_t len=b-a; if (len>159) len=159;
+   memcpy(out[seg],s+a,len); out[seg][len]=0; seg++;
+   start=i+1;
+  }
+ }
+ return -1;
+}
+static void parameters_block(search *s) {
+ gbuf *out=&s->res->text;
+ if (!s->declparams[0]) return;
+ if (!s->docform[0]) {
+  gbuf_adds(out,"PARAMETERS: no documented signature in local excerpts; parameter names are exactly as written in the declaration.\n");
+  return;
+ }
+ const char *df=strchr(s->docform,'(');
+ if (!df) {
+  gbuf_adds(out,"PARAMETERS: no documented signature in local excerpts; parameter names are exactly as written in the declaration.\n");
+  return;
+ }
+ if (stripped_equal(s->declparams,df)) {
+  gbuf_adds(out,"PARAMETERS: header and documented forms agree.\n");
+  return;
+ }
+ static char dh[12][160], dd[12][160];
+ int nh=split_params(s->declparams,dh,12), nd=split_params(df,dd,12);
+ if (nh>0 && nh==nd) {
+  gbuf_adds(out,"PARAMETERS:\n");
+  for (int i=0;i<nh;i++) {
+   char ln[32]; snprintf(ln,sizeof ln,"  %d: header '",i+1); gbuf_adds(out,ln);
+   gbuf_adds(out,dh[i]); gbuf_adds(out,"' | documented '"); gbuf_adds(out,dd[i]);
+   gbuf_adds(out,"'\n");
+  }
+  gbuf_adds(out,"  (documented names from quoted manual text, matched positionally; not inferred.)\n");
+  return;
+ }
+ gbuf_adds(out,"PARAMETERS:\n  header '"); gbuf_adds(out,s->declparams);
+ gbuf_adds(out,"'\n  documented '"); gbuf_adds(out,df);
+ gbuf_adds(out,"'\n  (forms differ structurally; quoted verbatim, not reconciled.)\n");
+}
 static void packages(search *s, const char *missing) {
  int found=0;
  for(size_t i=0;i<sizeof adapters/sizeof *adapters;i++) {
@@ -403,6 +513,7 @@ int sysref_api(const char *query, int semantics, result *res) {
     * authoritative local documentation exists before inferring behaviour. */
    if(!s.docs) gbuf_adds(&res->text,"DOCUMENTATION: unavailable in searched files (not proof that a documentation package exists).\n");
    else { char dn[64]; snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) quoted above.\n",s.docs); gbuf_adds(&res->text,dn); }
+   if(semantics && s.matches) parameters_block(&s);
    if(s.docs) gbuf_adds(&res->text,"ARGUMENTS: described only where quoted above; no separate parameter table inferred from types.\n");
    else gbuf_adds(&res->text,"ARGUMENTS: unavailable -- no local documentation names the parameters; do not infer from types.\n");
    if(s.matches) gbuf_adds(&res->text,"STATUS: declaration found.\n");

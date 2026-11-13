@@ -89,7 +89,7 @@ s = run('headers', 'widget.h', 'widget_open')
 check('widget.h:3' in s and 'widget_open' in s, 'neutral header+symbol query')
 
 (docs / 'mpfr-4.2').mkdir()
-(docs / 'mpfr-4.2' / 'api.md').write_text('# mpfr_subnormalize\nArguments: x is rounded.\nReturn: documented ternary result.\n\nUnrelated text.\n')
+(docs / 'mpfr-4.2' / 'api.md').write_text('# mpfr_subnormalize\nint mpfr_subnormalize (mpfr_t X, int T, mpfr_rnd_t RND)\nArguments: x is rounded.\nReturn: documented ternary result.\n\nUnrelated text.\n')
 s = run('api', 'mpfr.h', 'mpfr_subnormalize')
 check('api.md:1' in s and 'documented ternary result' in s, 'version-directory local documentation')
 check('not established' in s and 'no separate parameter table inferred' in s, 'uncertainty explicit')
@@ -98,6 +98,9 @@ check('HEADER: ' in s and 'mpfr.h:' in s, 'lifecycle header line with file and l
 check('PACKAGE: ' in s, 'lifecycle package line')
 check('ARGUMENTS: ' in s and 'STATUS: declaration found.' in s, 'lifecycle arguments and status')
 check('Detailed local manual: quoted above' in s, 'manual quoted status when documented')
+check("1: header 'mpfr_ptr' | documented 'mpfr_t X'" in s, 'parameters contrast header and documented forms')
+check("3: header 'mpfr_rnd_t' | documented 'mpfr_rnd_t RND'" in s, 'parameters final position named by manual')
+check('matched positionally; not inferred' in s, 'parameters provenance explicit')
 (docs / 'mpfr-4.2' / 'api.md').unlink()
 with gzip.open(docs / 'mpfr.info.gz', 'wt') as f:
     f.write('Node: Rounding\nmpfr_subnormalize: Returns a documented status.\n\n')
@@ -112,6 +115,7 @@ s = run('api', 'mpfr_subnormalize')
 check('DOCUMENTATION: unavailable' in s and 'provider unknown' in s, 'missing docs no invented package')
 check('ARGUMENTS: unavailable' in s and 'do not infer from types' in s, 'arguments honestly unavailable')
 check('STATUS: declaration found.' in s and 'Detailed local manual: unavailable.' in s, 'honest manual status')
+check('PARAMETERS: no documented signature' in s, 'parameters honestly absent without docs')
 empty = base / 'empty'
 empty.mkdir()
 s = run('api', 'mpfr_subnormalize', expected=1, custom=dict(env, SYSREF_INCLUDE_PATH=str(empty)))
@@ -147,6 +151,9 @@ check('installation state unknown' in s, 'doc package absence not inferred from 
 (docs / 'same-package.txt').write_text('mpfr_subnormalize has a fixture contract.\n')
 check('same installed package/version' in run('api', 'mpfr_subnormalize'), 'version-associated local reference')
 (docs / 'same-package.txt').unlink()
+(docs / 'widget-doc.txt').write_text('widget_open has a fixture contract.\nextern int\nwidget_open(\n int fd,\n int flags\n);\n')
+check('PARAMETERS: header and documented forms agree.' in run('api', 'widget.h', 'widget_open'), 'parameters agree when doc quotes header form')
+(docs / 'widget-doc.txt').unlink()
 
 # Existing man source still uses native discovery and rendering.
 (helpers / 'man').write_text('#!/bin/sh\ncase "$*" in\n*"-w"*) echo "'+str(base / 'demo.1')+'";;\n*) printf "DEMO(1)\\n\\nNAME\\n demo - fixture\\n\\nSYNOPSIS\\n demo [OPTION]\\n\\nDESCRIPTION\\n Local fixture description.\\n";;\nesac\n')

@@ -164,7 +164,11 @@ included and HTML tags stripped, then DOCUMENTATION availability,
 ARGUMENTS availability, STATUS, and a Detailed-local-manual line that is
 explicit when no manual exists. A signature alone never establishes argument
 meaning; when documentation is unavailable the agent is told so rather than
-left to infer from types. Search bounds (file count, read bytes, depth,
+left to infer from types. Where a quoted manual states a documented
+signature for the symbol, its parameter list is compared with the header's
+own form position by position (PARAMETERS), so names present only in the
+manual are distinguished from the header text without inventing any.
+Search bounds (file count, read bytes, depth,
 match and reply limits) are reported when reached: a no-match is not an
 exhaustive absence claim. Internal function implementations are out of
 scope: headers and manuals describe the API contract, not the algorithm.
