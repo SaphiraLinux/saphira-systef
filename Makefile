@@ -28,12 +28,12 @@ MANDIR   ?= $(PREFIX)/share/man
 MAN1DIR  ?= $(MANDIR)/man1
 DESTDIR  ?=
 SYSCONFDIR ?= /etc
-CONFDIR  ?= $(SYSCONFDIR)/akaman
-CONF     ?= $(CONFDIR)/akamcp.conf
+CONFDIR  ?= $(SYSCONFDIR)/sysref
+CONF     ?= $(CONFDIR)/sysref.conf
 
-SRC := src/main.c src/core.c src/mcp.c src/json.c
+SRC := src/main.c src/core.c src/mcp.c src/json.c src/api.c
 OBJ := $(SRC:.c=.o)
-BIN := akaman
+BIN := sysref
 
 all: $(BIN)
 

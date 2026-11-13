@@ -7,21 +7,22 @@
 #include <unistd.h>
 
 static const char *usage =
-    "akaman - minimal local man-page context for AI agents\n"
+    "sysref - minimal local man-page context for AI agents\n"
     "\n"
     "usage:\n"
-    "  akaman QUERY [SECTION]         query native man pages (source=man)\n"
+    "  sysref QUERY [SECTION]         query native man pages (source=man)\n"
     "                                 SECTION numeric = man section, alphabetic = named section\n"
-    "  akaman -s SECTION QUERY        same\n"
-    "  akaman --source doc QUERY      query /usr/share/doc (README/FAQ/.txt/.md)\n"
-    "  akaman --source headers QUERY  query system headers (stdio.h printf)\n"
-    "  akaman --source man QUERY      query native man pages (default)\n"
-    "  akaman --stats QUERY [SECTION] print result plus token metrics\n"
-    "  akaman --mcp                   MCP stdio server (one tool: man)\n"
-    "  akaman --http[=ADDR] | --web[=ADDR]   webMCP HTTP server (default 127.0.0.1:8931)\n"
-    "                                 requires APIKEY in /etc/akaman/akamcp.conf\n"
-    "  akaman --conf PATH             config file path (APIKEY for webMCP)\n"
-    "  akaman --bench                 benchmark table\n"
+    "  sysref -s SECTION QUERY        same\n"
+    "  sysref --source doc QUERY      query /usr/share/doc (README/FAQ/.txt/.md)\n"
+    "  sysref --source headers QUERY  query system headers (stdio.h printf)\n"
+    "  sysref --source api SYMBOL    declaration and local API documentation\n"
+    "  sysref --source man QUERY      query native man pages (default)\n"
+    "  sysref --stats QUERY [SECTION] print result plus token metrics\n"
+    "  sysref --mcp                   MCP stdio server (one tool: man)\n"
+    "  sysref --http[=ADDR] | --web[=ADDR]   webMCP HTTP server (default 127.0.0.1:8931)\n"
+    "                                 requires APIKEY in /etc/sysref/sysref.conf\n"
+    "  sysref --conf PATH             config file path (APIKEY for webMCP)\n"
+    "  sysref --bench                 benchmark table\n"
     "\n"
     "  QUERY forms: command [option] | command [section-name] | command subcommand\n"
     "    e.g. \"grep -r\"      -> the -r, --recursive option entry\n"
@@ -36,15 +37,19 @@ static const char *usage =
     "  (starting -/--) additionally list the nearest real option names.\n"
     "\n"
     "examples:\n"
-    "  akaman \"ip link set\"\n"
-    "  akaman \"rsync --delete\"\n"
-    "  akaman -s 2 open\n";
+    "  sysref \"ip link set\"\n"
+    "  sysref \"rsync --delete\"\n"
+    "  sysref -s 2 open\n";
 
 int main(int argc, char **argv) {
-	const char *conf = "/etc/akaman/akamcp.conf";
+	const char *conf = "/etc/sysref/sysref.conf";
 	int mode = 0; /* 0 cli, 1 mcp, 2 http, 3 bench */
 	char httpaddr[256] = "127.0.0.1:8931";
 	const char *query = NULL;
+	const char *pos[64];
+	int npos = 0;
+	gbuf joined;
+	gbuf_init(&joined);
 	const char *section = NULL;
 	const char *source = NULL;
 	int stats = 0;
@@ -70,24 +75,32 @@ int main(int argc, char **argv) {
 		} else if (strcmp(a, "-s") == 0 && i + 1 < argc) {
 			section = argv[++i];
 		} else if (a[0] == '-' && a[1]) {
-			fprintf(stderr, "akaman: unknown option: %s\n", a);
+			fprintf(stderr, "sysref: unknown option: %s\n", a);
 			fputs(usage, stderr);
 			return 2;
 		} else {
-			if (!query) query = a;
-			else if (!section) section = a;
-			else {
-				fprintf(stderr, "akaman: too many arguments\n");
-				return 2;
-			}
+			if (npos == 64) { fputs("sysref: too many arguments\n", stderr); return 2; }
+			pos[npos++] = a;
 		}
+	}
+
+	if (source && strcmp(source, "man") != 0) {
+		for (int i = 0; i < npos; i++) {
+			if (i) gbuf_addch(&joined, ' ');
+			gbuf_adds(&joined, pos[i]);
+		}
+		query = joined.p;
+	} else {
+		if (npos > (section ? 1 : 2)) { fputs("sysref: too many arguments\n", stderr); return 2; }
+		if (npos) query = pos[0];
+		if (npos == 2) section = pos[1];
 	}
 
 	if (mode == 1) return run_stdio();
 	if (mode == 2) {
 		char key[512] = {0};
 		if (!conf_load(conf, key, sizeof key)) {
-			fprintf(stderr, "akaman: webMCP requires APIKEY defined in %s\n", conf);
+			fprintf(stderr, "sysref: webMCP requires APIKEY defined in %s\n", conf);
 			return 1;
 		}
 		return run_http(httpaddr, key);
@@ -113,5 +126,6 @@ int main(int argc, char **argv) {
 		else fprintf(stderr, "reduction: %.1f%%\n", reduction);
 	}
 	result_free(&res);
+	gbuf_free(&joined);
 	return st ? 1 : 0;
 }

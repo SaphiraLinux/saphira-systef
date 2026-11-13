@@ -1108,7 +1108,7 @@ static int pkg_owner_dir(const char *cmd, char *dir, size_t sz) {
 			pkg[l] = 0;
 			free(out);
 			char root[PATH_MAX], candidate[PATH_MAX], canon[PATH_MAX];
-			if (!realpath("/usr/share/doc", root) ||
+			if (!realpath(getenv("SYSREF_DOC_ROOT") ? getenv("SYSREF_DOC_ROOT") : "/usr/share/doc", root) ||
 			    snprintf(candidate, sizeof candidate, "%s/%s", root, pkg) >= (int)sizeof candidate)
 				continue;
 			struct stat st2;
@@ -1127,7 +1127,7 @@ static int pkg_owner_dir(const char *cmd, char *dir, size_t sz) {
 
 static int find_doc_dir(const char *pkg, char *dir, size_t sz) {
 	char root[PATH_MAX];
-	if (!safe_relative_path(pkg, 0) || !realpath("/usr/share/doc", root)) return 0;
+	if (!safe_relative_path(pkg, 0) || !realpath(getenv("SYSREF_DOC_ROOT") ? getenv("SYSREF_DOC_ROOT") : "/usr/share/doc", root)) return 0;
 	if (snprintf(dir, sz, "%s/%s", root, pkg) >= (int)sz) return 0;
 	struct stat st;
 	char canon[PATH_MAX];
@@ -1443,277 +1443,6 @@ static int akaman_run_doc(const char *query, result *res) {
 /* Locate the system include root.  On macOS the SDK path is dynamic
  * (xcrun --show-sdk-path), falling back to the legacy root; everywhere
  * else /usr/include.  No hardcoded SDK path: xcrun is authoritative. */
-static int find_include_root(char *root, size_t sz) {
-	{
-		char *av[] = {"xcrun", "--show-sdk-path", NULL};
-		char *out = NULL;
-		size_t ol;
-		int st;
-		int rc = run_cmd(av, &out, &ol, &st);
-		if (rc >= 0 && st == 0) {
-			size_t l = 0;
-			while (l < ol && out[l] != '\n' && out[l] != '\r') l++;
-			int ok = l > 0 && l < sz - (size_t)14;
-			if (ok) {
-				memcpy(root, out, l);
-				root[l] = 0;
-				struct stat st2;
-				if (stat(root, &st2) != 0 || !S_ISDIR(st2.st_mode)) ok = 0;
-			}
-			free(out);
-			if (ok) {
-				size_t rl = strlen(root);
-				snprintf(root + rl, sz - rl, "/usr/include");
-				struct stat st2;
-				return stat(root, &st2) == 0 && S_ISDIR(st2.st_mode);
-			}
-		}
-	}
-	/* fallbacks */
-	static const char *cands[] = {
-		"/usr/include",
-		"/usr/local/include",
-		NULL};
-	for (int i = 0; cands[i]; i++) {
-		struct stat st2;
-		if (stat(cands[i], &st2) == 0 && S_ISDIR(st2.st_mode)) {
-			snprintf(root, sz, "%s", cands[i]);
-			return 1;
-		}
-	}
-	return 0;
-}
-
-/* a header query names a concrete header first (stdio, stdio.h, sys/socket,
- * sys/socket.h); optional trailing tokens are symbols to find inside it. */
-static int header_file_exists(const char *root, const char *hdr, char *path, size_t sz) {
-	char rootcanon[PATH_MAX];
-	if (!safe_relative_path(hdr, 1) || !realpath(root, rootcanon)) return 0;
-	size_t rl = strlen(rootcanon), hl = strlen(hdr);
-	if (rl + 1 + hl + 5 + 1 >= sz) return 0;
-	memcpy(path, rootcanon, rl);
-	path[rl] = '/';
-	memcpy(path + rl + 1, hdr, hl);
-	path[rl + 1 + hl] = 0;
-	struct stat st;
-	char canon[PATH_MAX];
-	if (stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
-	    canonical_under(path, rootcanon, canon, sizeof canon) && strlen(canon) + 1 <= sz) {
-		strcpy(path, canon);
-		return 1;
-	}
-	/* assume ".h" when no dot is present */
-	if (!strrchr(hdr, '.')) {
-		memcpy(path + rl + 1 + hl, ".h", 3);
-		if (stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
-		    canonical_under(path, rootcanon, canon, sizeof canon) && strlen(canon) + 1 <= sz) {
-			strcpy(path, canon);
-			return 1;
-		}
-	}
-	return 0;
-}
-
-/* find the smallest declaration block mentioning every symbol term:
- * scan declaration-looking lines (start of a line, or after "(" "," ";"),
- * expand forward to the closing ';' (braces for struct/define bodies).
- * whole lines only, budget capped. */
-static int find_header_block(const line *ls, int n, const char **terms, int nt, gbuf *out) {
-	int best = -1, bestsc = INT_MIN;
-	for (int i = 0; i < n; i++) {
-		const char *s;
-		size_t l = trimline(&ls[i], &s);
-		if (l == 0) continue;
-		int matched = 0;
-		for (int k = 0; k < nt; k++)
-			if (has_word(s, l, terms[k])) matched++;
-		if (matched != nt) continue;
-		/* score: strong if the line itself starts a declaration */
-		int sc = matched * 100000;
-		if (s[0] == '#') sc += 5000;             /* #define / #include */
-		if (i == 0 || ls[i - 1].blank) sc += 20000; /* declaration start */
-		if (l <= 100) sc += 5000;
-		sc -= (int)l;
-		if (sc > bestsc) { bestsc = sc; best = i; }
-	}
-	if (best < 0) return 0;
-	int a = best;
-	/* climb to the top of the declaration block: previous lines that are
-	 * not blank and do not end in ';' '}' ')' belong to the same decl */
-	while (a > 0) {
-		const char *s;
-		size_t l = trimline(&ls[a - 1], &s);
-		if (l == 0) break;
-		if (s[l - 1] == ';' || s[l - 1] == '}' || s[l - 1] == ')') break;
-		a--;
-		if (best - a > 6) break;
-	}
-	int b = best + 1;
-	int brace = 0;
-	for (int i = best; i < n; i++) {
-		const char *x;
-		size_t xl = trimline(&ls[i], &x);
-		for (size_t j = 0; j < xl; j++) {
-			if (x[j] == '{') brace++;
-			else if (x[j] == '}') brace--;
-		}
-		b = i + 1;
-		if (x[0] == '#') continue; /* #define body continues until backslash-\n or blank */
-		if (brace > 0) continue;
-		if (i > best && xl > 0 && x[xl - 1] == ';') break;
-		if (i > best && xl == 0) break;
-		if (i - best > 40) break;
-	}
-	for (int i = a; i < b; i++) {
-		if (ls[i].len + 1 > DOC_BUDGET_BYTES - out->len) {
-			out->len = 0;
-			if (out->p) out->p[0] = 0;
-			return 0;
-		}
-		gbuf_addn(out, ls[i].s, ls[i].len);
-		gbuf_addch(out, '\n');
-	}
-	if (brace > 0) {
-		out->len = 0;
-		if (out->p) out->p[0] = 0;
-		return 0;
-	}
-	return 1;
-}
-
-static int akaman_run_headers(const char *query, result *res) {
-	char root[512];
-	if (!find_include_root(root, sizeof root)) {
-		gbuf_adds(&res->text, "no local include root found (xcrun and /usr/include)\n");
-		res->status = 1;
-		return 1;
-	}
-	toks t;
-	memset(&t, 0, sizeof t);
-	if (!split_tokens(query, &t)) {
-		gbuf_adds(&res->text, "no header match for \"");
-		gbuf_adds(&res->text, query);
-		gbuf_adds(&res->text, "\"\n");
-		res->status = 1;
-		return 1;
-	}
-	/* first token = header name; rest = symbols */
-	char hdr[256] = "";
-	for (int i = 0; i < t.n; i++) {
-		int ok = 1;
-		for (const char *p = t.v[i]; *p; p++) {
-			unsigned char c = (unsigned char)*p;
-			if (c == '/') continue;
-			if (!(isalnum(c) || c == '_' || c == '-' || c == '.')) { ok = 0; break; }
-		}
-		if (ok && has_alnum(t.v[i])) {
-			strncpy(hdr, t.v[i], sizeof hdr - 1);
-			hdr[sizeof hdr - 1] = 0;
-			break;
-		}
-	}
-	const char *terms[8];
-	int nt = 0;
-	int seenhdr = 0;
-	for (int i = 0; i < t.n; i++) {
-		if (!seenhdr && strcmp(t.v[i], hdr) == 0) { seenhdr = 1; continue; }
-		if (nt < 8) terms[nt++] = t.v[i];
-	}
-	if (!hdr[0]) {
-		gbuf_adds(&res->text, "no header match for \"");
-		gbuf_adds(&res->text, query);
-		gbuf_adds(&res->text, "\" (name a header, e.g. stdio.h)\n");
-		res->status = 1;
-		toks_free(&t);
-		return 1;
-	}
-
-	char path[600];
-	if (!header_file_exists(root, hdr, path, sizeof path)) {
-		gbuf_adds(&res->text, "no such header: ");
-		gbuf_adds(&res->text, hdr);
-		gbuf_adds(&res->text, "\n");
-		res->status = 1;
-		toks_free(&t);
-		return 1;
-	}
-	/* canonical header name: what sits under the include root */
-	const char *rel = path + strlen(root) + 1;
-	{
-		char canon[256];
-		strncpy(canon, rel, sizeof canon - 1);
-		canon[sizeof canon - 1] = 0;
-		strncpy(hdr, canon, sizeof hdr - 1);
-		hdr[sizeof hdr - 1] = 0;
-		(void)0;
-	}
-
-	strncpy(res->pagename, hdr, sizeof res->pagename - 1);
-	res->pagename[sizeof res->pagename - 1] = 0;
-	gbuf raw;
-	gbuf_init(&raw);
-	if (!doc_read_file(path, &raw)) {
-		gbuf_adds(&res->text, "could not read ");
-		gbuf_adds(&res->text, path);
-		gbuf_adds(&res->text, "\n");
-		res->status = 1;
-		toks_free(&t);
-		gbuf_free(&raw);
-		return 1;
-	}
-	res->full_bytes = raw.len;
-	int n = 0;
-	line *ls = build_lines(raw.p, raw.len, &n);
-
-	if (nt == 0) {
-		/* bare header query: show the file's guard + a small excerpt */
-		gbuf_adds(&res->text, "#include <");
-		gbuf_adds(&res->text, hdr);
-		gbuf_adds(&res->text, ">\n");
-		int shown = 0;
-		for (int i = 0; i < n && shown < 12; i++) {
-			const char *s;
-			size_t l = trimline(&ls[i], &s);
-			if (l == 0) continue;
-			if (s[0] == '\'' || s[0] == '/') continue; /* comment */
-			gbuf_addn(&res->text, ls[i].s, ls[i].len);
-			gbuf_addch(&res->text, '\n');
-			shown++;
-		}
-		res->status = 0;
-		free(ls);
-		gbuf_free(&raw);
-		toks_free(&t);
-		return 0;
-	}
-
-	gbuf res2;
-	gbuf_init(&res2);
-	if (!find_header_block(ls, n, terms, nt, &res2)) {
-		gbuf_adds(&res->text, "no match for \"");
-		gbuf_adds(&res->text, query);
-		gbuf_adds(&res->text, "\" in <");
-		gbuf_adds(&res->text, hdr);
-		gbuf_adds(&res->text, ">\n");
-		res->status = 2;
-		free(ls);
-		gbuf_free(&res2);
-		gbuf_free(&raw);
-		toks_free(&t);
-		return 0;
-	}
-	gbuf_adds(&res->text, "#include <");
-	gbuf_adds(&res->text, hdr);
-	gbuf_adds(&res->text, ">\n");
-	gbuf_addn(&res->text, res2.p, res2.len);
-	gbuf_free(&res2);
-	res->status = 0;
-	free(ls);
-	gbuf_free(&raw);
-	toks_free(&t);
-	return 0;
-}
-
 /* ------------------------------------------------------------------ */
 /* top-level entry point                                               */
 /* ------------------------------------------------------------------ */
@@ -1737,8 +1466,9 @@ int akaman_run(const char *query, const char *section, const char *source, resul
 		res->status = 1;
 		return 1;
 	}
+	if (source && strcmp(source, "api") == 0) return sysref_api(query, 1, res);
 	if (source && strcmp(source, "doc") == 0) return akaman_run_doc(query, res);
-	if (source && strcmp(source, "headers") == 0) return akaman_run_headers(query, res);
+	if (source && strcmp(source, "headers") == 0) return sysref_api(query, 0, res);
 	if (source && strcmp(source, "man") != 0) {
 		gbuf_adds(&res->text, "unknown source \"");
 		gbuf_adds(&res->text, source);

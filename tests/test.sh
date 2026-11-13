@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# akaman test suite. Run with: make test
+# sysref test suite. Run with: make test
 set -u
 
 cd "$(dirname "$0")/.."
-BIN="$PWD/akaman"
+BIN="${BIN:-$PWD/sysref}"
 
 pass=0
 fail=0
@@ -162,7 +162,7 @@ mcp_schema=$(printf 'Content-Length: %d\r\n\r\n{"jsonrpc":"2.0","id":9,"method":
 t_contains "only the man tool exists" "$mcp_schema" '"name":"man"'
 t_not_contains "no extra MCP tool introduced" "$mcp_schema" '"name":"sections"'
 t_not_contains "no extra schema field" "$mcp_schema" '"sections"'
-t_contains "schema has source enum" "$mcp_schema" '"source":{"type":"string","enum":["man","doc","headers"]}'
+t_contains "schema has source enum" "$mcp_schema" '"source":{"type":"string","enum":["man","doc","headers","api"]}'
 
 # --- /usr/share/doc source ----------------------------------------------
 out=$(run --source doc bash)
@@ -206,29 +206,29 @@ t_contains "unknown source message" "$out" "unknown source"
 # --- system headers source ----------------------------------------------
 out=$(run --source headers "stdio printf")
 t "headers symbol query exit 0" "$?" "0" "0"
-t_contains "headers include line" "$out" "#include <stdio.h>"
+t_contains "headers include line" "$out" "SOURCE: /usr/include/stdio.h:"
 t_contains "headers printf block" "$out" "printf"
 
 out=$(run --source headers "sys/socket connect")
 t "headers subdir query exit 0" "$?" "0" "0"
-t_contains "headers subdir include" "$out" "#include <sys/socket.h>"
-t_contains "headers connect block" "$out" "extern int connect"
+t_contains "headers subdir include" "$out" "SOURCE: /usr/include/sys/socket.h:"
+t_contains "headers connect block" "$out" "connect ("
 
 out=$(run --source headers stdio.h)
 t "headers bare header exit 0" "$?" "0" "0"
-t_contains "headers bare include" "$out" "#include <stdio.h>"
+t_contains "headers bare include" "$out" "SOURCE: /usr/include/stdio.h:"
 
 out=$(run --source headers "no_such_header_zzz x")
 t "headers missing header exit 1" "$?" "1" "1"
-t_contains "headers missing header message" "$out" "no such header"
+t_contains "headers missing header message" "$out" "Missing header"
 
 out=$(run --source headers "stdio.h zzz_nothere")
 t "headers no symbol match exit 1" "$?" "1" "1"
-t_contains "headers no symbol message" "$out" "no match for"
+t_contains "headers no symbol message" "$out" "Symbol not found"
 t_contains "headers no symbol names header" "$out" "stdio.h"
 
 out=$(run --source headers "string.h strlen")
-t_headers=$(printf '%s' "$out" | grep -c '^#include')
+t_headers=$(printf '%s' "$out" | grep -c '^SOURCE:')
 t "headers single include line" "$t_headers" "1" "1"
 
 # headers replies stay within the ~400-token budget
@@ -249,13 +249,13 @@ out=$(run "")
 t "empty query exit 1" "$?" "1" "1"
 
 # --- injection resistance ----------------------------------------------
-rm -f /tmp/akaman_pwn /tmp/akaman_pwn2
-out=$(run 'ls; touch /tmp/akaman_pwn')
+rm -f ${TMPDIR:-/build/tmp}/sysref_pwn ${TMPDIR:-/build/tmp}/sysref_pwn2
+out=$(run 'ls; touch ${TMPDIR:-/build/tmp}/sysref_pwn')
 t "shell metachar query exit 1" "$?" "1" "1"
-t "no file created by ; injection" "$(test -f /tmp/akaman_pwn && echo yes || echo no)" "no" "no"
-out=$(run '$(touch /tmp/akaman_pwn2)')
+t "no file created by ; injection" "$(test -f ${TMPDIR:-/build/tmp}/sysref_pwn && echo yes || echo no)" "no" "no"
+out=$(run '$(touch ${TMPDIR:-/build/tmp}/sysref_pwn2)')
 t "command substitution query exit 1" "$?" "1" "1"
-t "no file created by $() injection" "$(test -f /tmp/akaman_pwn2 && echo yes || echo no)" "no" "no"
+t "no file created by $() injection" "$(test -f ${TMPDIR:-/build/tmp}/sysref_pwn2 && echo yes || echo no)" "no" "no"
 
 # SQL injection-shaped input must remain inert. Akaman has no database, but
 # these payloads still exercise tokenisation, page resolution, and error
@@ -287,7 +287,7 @@ t "SQLi doc payload is rejected" "$?" "1" "1"
 t_contains "SQLi doc payload returns no-match" "$out" "no local doc match"
 out=$(run --source headers '<script>alert(1)</script>')
 t "XSS headers payload is rejected" "$?" "1" "1"
-t_contains "XSS headers payload returns no-match" "$out" "no header match"
+t_contains "XSS headers payload returns no-match" "$out" "Missing header"
 
 # stray path tokens must not become anchors (ls / matched lowpan line)
 out=$(run "ip link set ls /")
@@ -356,7 +356,7 @@ mcp_json() {
 	printf '%s' "${resp#*$'\r\n\r\n'}"
 }
 out=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}')
-t_contains "initialize server name" "$out" '"name":"akaman"'
+t_contains "initialize server name" "$out" '"name":"sysref"'
 t_contains "initialize protocol echo" "$out" '"protocolVersion":"2025-03-26"'
 
 out=$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
@@ -412,7 +412,7 @@ fi
 
 # header results must satisfy every requested symbol
 out=$(run --source headers "stdio printf zzz_nothere")
-t_contains "header missing term reports no match" "$out" "no match for"
+t_contains "header missing term reports no match" "$out" "Use [header.h] symbol"
 t_not_contains "header missing term returns no declaration" "$out" "_PRINTF_NAN_LEN_MAX"
 
 out=$(run -s 123456789 open)
@@ -454,7 +454,7 @@ if command -v curl >/dev/null 2>&1; then
 	out=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "$hdr" -H 'Authorization: Bearer wrong' \
 		-d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "$url")
 	t "http bad key 401" "$out" "401" "401"
-	http_body="/tmp/akaman-http-body-$$"
+	http_body="${TMPDIR:-/build/tmp}/sysref-http-body-$$"
 	out=$(curl -s -o "$http_body" -w '%{http_code} %{size_download}' -X POST -H "$hdr" -H 'Authorization: Bearer wrong' \
 		-d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "$url")
 	t "http 401 body length is exact" "$out" "401 24" "401 24"
@@ -483,34 +483,34 @@ t "no args exit 2" "$?" "2" "2"
 
 # --- installed manual page ----------------------------------------------
 # These prove the man page works through native man after 'make install'
-# and that akaman can retrieve its own locally installed manual.  They are
+# and that sysref can retrieve its own locally installed manual.  They are
 # skipped unless the page is actually installed so 'make test' stays green.
-if man -w akaman >/dev/null 2>&1; then
-	out=$(man -w akaman 2>&1)
-	t "man -w akaman resolves" "$?" "0" "0"
-	t_contains "man -w akaman finds local path" "$out" "akaman.1"
+if man -w sysref >/dev/null 2>&1; then
+	out=$(man -w sysref 2>&1)
+	t "man -w sysref resolves" "$?" "0" "0"
+	t_contains "man -w sysref finds local path" "$out" "sysref.1"
 
-	out=$(man akaman 2>&1)
-	t "man akaman exit 0" "$?" "0" "0"
-	t_contains "man akaman NAME section" "$out" "akaman - minimal local man-page context for AI agents"
-	t_contains "man akaman OPTIONS" "$out" "SYNOPSIS"
+	out=$(man sysref 2>&1)
+	t "man sysref exit 0" "$?" "0" "0"
+	t_contains "man sysref NAME section" "$out" "sysref - minimal local man-page context for AI agents"
+	t_contains "man sysref OPTIONS" "$out" "SYNOPSIS"
 
-	out=$(run akaman)
-	t "akaman self lookup exit 0" "$?" "0" "0"
-	t_contains "akaman self lookup header" "$out" "akaman(1)"
-	t_contains "akaman self lookup synopsis" "$out" "SYNOPSIS"
+	out=$(run sysref)
+	t "sysref self lookup exit 0" "$?" "0" "0"
+	t_contains "sysref self lookup header" "$out" "sysref(1)"
+	t_contains "sysref self lookup synopsis" "$out" "SYNOPSIS"
 
-	out=$(run "akaman --source")
-	t "akaman self option entry exit 0" "$?" "0" "0"
-	t_contains "akaman self option entry" "$out" "--source"
-	t_contains "akaman self option sources" "$out" "man"
-	t_contains "akaman self option doc" "$out" "doc"
-	t_contains "akaman self option headers" "$out" "headers"
+	out=$(run "sysref --source")
+	t "sysref self option entry exit 0" "$?" "0" "0"
+	t_contains "sysref self option entry" "$out" "--source"
+	t_contains "sysref self option sources" "$out" "man"
+	t_contains "sysref self option doc" "$out" "doc"
+	t_contains "sysref self option headers" "$out" "headers"
 
-	out=$(run "akaman examples")
-	t "akaman self examples exit 0" "$?" "0" "0"
-	t_contains "akaman self examples section" "$out" "EXAMPLES"
-	t_contains "akaman self examples cmd" "$out" "akaman -s 2 open"
+	out=$(run "sysref examples")
+	t "sysref self examples exit 0" "$?" "0" "0"
+	t_contains "sysref self examples section" "$out" "EXAMPLES"
+	t_contains "sysref self examples cmd" "$out" "sysref -s 2 open"
 else
 	printf 'SKIP  installed man-page tests (run make install first)\n'
 fi

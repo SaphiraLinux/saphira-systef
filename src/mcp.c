@@ -14,7 +14,7 @@
 #include <fcntl.h>
 
 /* ------------------------------------------------------------------ */
-/* config: /etc/akaman/akamcp.conf  (APIKEY=...)                         */
+/* config: /etc/sysref/sysref.conf  (APIKEY=...)                         */
 /* ------------------------------------------------------------------ */
 int conf_load(const char *path, char *key, size_t keysz) {
 	FILE *f = fopen(path, "r");
@@ -112,7 +112,7 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		json_escape(&r, pv, strlen(pv));
 		gbuf_adds(&r,
 		          ",\"capabilities\":{\"tools\":{\"listChanged\":false}},"
-		          "\"serverInfo\":{\"name\":\"akaman\",\"version\":\"0.1.0\"}}");
+		          "\"serverInfo\":{\"name\":\"sysref\",\"version\":\"0.1.0\"}}");
 		jsonrpc_result(resp, id->raw, id->rawlen, r.p);
 		gbuf_free(&r);
 	} else if (strcmp(m, "ping") == 0) {
@@ -126,6 +126,17 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		jv *q = args ? jv_get(args, "query") : NULL;
 		jv *sec = args ? jv_get(args, "section") : NULL;
 		jv *src = args ? jv_get(args, "source") : NULL;
+		jv *starg = args ? jv_get(args, "stats") : NULL;
+		/* jv: t==1 is bool and the value lives in .b (not .num). A stringified
+		 * boolean is accepted too, because an agent that stringifies its
+		 * arguments should get the metrics rather than a silent no-op. */
+		int want_stats = 0;
+		if (starg) {
+			if (starg->t == 1) want_stats = starg->b != 0;
+			else if (starg->t == 3 && starg->str &&
+			         (strcmp(starg->str, "true") == 0 || strcmp(starg->str, "1") == 0))
+				want_stats = 1;
+		}
 		if ((name && (name->t != 3 || strcmp(name->str ? name->str : "", "man") != 0)) ||
 		    !q || !q->str) {
 			jsonrpc_error(resp, id->raw, id->rawlen, -32602, "invalid tool call arguments");
@@ -141,6 +152,51 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		memset(&res, 0, sizeof res);
 		akaman_run(q->str, (sec && sec->str) ? sec->str : NULL,
 		           (src && src->str) ? src->str : NULL, &res);
+		/* Opt-in metrics footer. Default output is untouched, so the common
+		 * case pays nothing for this. The point is that an agent can hold
+		 * this tool's central claim -- that it returns a fraction of a page --
+		 * to account without shelling out to --stats. */
+		if (want_stats) {
+			double reduction =
+			    res.full_bytes ? 100.0 * (1.0 - (double)res.text.len / (double)res.full_bytes)
+			                   : 0.0;
+			char foot[512];
+			/* Label the subject honestly. pagename is empty when the query
+			 * never resolved to a page, and pagesec is empty for doc results,
+			 * so the naive "%s(%s)" rendered "bash()" and "?()" -- both claim
+			 * a page that was never found. Fall back to the requested source. */
+			char who[256];
+			if (res.pagename[0] && res.pagesec[0])
+				snprintf(who, sizeof who, "%s(%s)", res.pagename, res.pagesec);
+			else if (res.pagename[0])
+				snprintf(who, sizeof who, "%s", res.pagename);
+			else if (src && src->str && src->str[0])
+				snprintf(who, sizeof who, "%s", src->str);
+			else
+				snprintf(who, sizeof who, "result");
+			/* full_bytes is only measured on the man and headers paths. The
+			 * doc bare-package path legitimately has no single source body, so
+			 * it leaves full_bytes at 0. Printing "reduction=0.0%" there would
+			 * be false precision -- it reads as "measured, no reduction" when
+			 * nothing was measured. Report n/a instead of inventing a number. */
+			if (res.full_bytes == 0)
+				snprintf(foot, sizeof foot,
+				         "\n[sysref] %s full=n/a returned=%zuB/~%zutok status=%d\n",
+				         who, res.text.len, EST_TOKENS(res.text.len), res.status);
+			else if (reduction > 99.9)
+				snprintf(foot, sizeof foot,
+				         "\n[sysref] %s full=%zuB/~%zutok returned=%zuB/~%zutok "
+				         "reduction=>99.9%% status=%d\n",
+				         who, res.full_bytes, EST_TOKENS(res.full_bytes), res.text.len,
+				         EST_TOKENS(res.text.len), res.status);
+			else
+				snprintf(foot, sizeof foot,
+				         "\n[sysref] %s full=%zuB/~%zutok returned=%zuB/~%zutok "
+				         "reduction=%.1f%% status=%d\n",
+				         who, res.full_bytes, EST_TOKENS(res.full_bytes), res.text.len,
+				         EST_TOKENS(res.text.len), reduction, res.status);
+			gbuf_adds(&res.text, foot);
+		}
 		gbuf txt;
 		gbuf_init(&txt);
 		gbuf_adds(&txt, "{\"content\":[{\"type\":\"text\",\"text\":");
@@ -397,7 +453,7 @@ int run_http(const char *addr, const char *api_key) {
 	}
 	struct in_addr bind_addr;
 	if (inet_pton(AF_INET, host, &bind_addr) != 1) {
-		fprintf(stderr, "akaman: invalid IPv4 bind address: %s\n", host);
+		fprintf(stderr, "sysref: invalid IPv4 bind address: %s\n", host);
 		return 1;
 	}
 
@@ -413,7 +469,7 @@ int run_http(const char *addr, const char *api_key) {
 	sa.sin_addr = bind_addr;
 	if (bind(fd, (struct sockaddr *)&sa, sizeof sa) < 0) { perror("bind"); close(fd); return 1; }
 	if (listen(fd, 16) < 0) { perror("listen"); close(fd); return 1; }
-	fprintf(stderr, "akaman webMCP listening on %s:%d (api key: %s)\n", host, port,
+	fprintf(stderr, "sysref webMCP listening on %s:%d (api key: %s)\n", host, port,
 	        api_key && api_key[0] ? "required" : "none");
 
 	for (;;) {

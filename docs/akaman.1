@@ -1,41 +1,41 @@
-.TH AKAMAN 1 "August 2026" "akaman 0.1.0" "User Commands"
+.TH SYSREF 1 "August 2026" "sysref 0.1.0" "User Commands"
 .SH NAME
-akaman \- minimal local man-page context for AI agents
+sysref \- minimal local man-page context for AI agents
 .SH SYNOPSIS
-.B akaman
+.B sysref
 .RI QUERY " [" SECTION ]
 .br
-.B akaman
+.B sysref
 .B \-s
 .RI SECTION " " QUERY
 .br
-.B akaman
+.B sysref
 .B \-\-source
-.BR man " | " doc " | " headers " " QUERY
+.BR man " | " doc " | " headers " | " api " " QUERY
 .br
-.B akaman
+.B sysref
 .B \-\-stats
 .RI QUERY " [" SECTION ]
 .br
-.B akaman
+.B sysref
 .B \-\-bench
 .br
-.B akaman
+.B sysref
 .B \-\-mcp
 .br
-.B akaman
+.B sysref
 .B \-\-http
 .RI [ =ADDR ]
 .br
-.B akaman
+.B sysref
 .B \-\-web
 .RI [ =ADDR ]
 .br
-.B akaman
+.B sysref
 .B \-\-conf
 .I PATH
 .SH DESCRIPTION
-.B akaman
+.B sysref
 answers one question \(em "what is the exact syntax of
 .I X
 ?" \(em by extracting the smallest useful fragment from the native man pages,
@@ -45,7 +45,7 @@ serves that fragment over MCP, HTTP, or the command line.
 It is a single static C binary with no dependencies, no database, no index,
 no embeddings, no AI summaries, and no network.  Native
 .B man
-is authoritative: akaman never re-implements man's discovery or rendering.
+is authoritative: sysref never re-implements man's discovery or rendering.
 Extraction works on whole lines only, and results are budget-capped
 (\(<= ~400 tokens by default) so replies stay small.
 .PP
@@ -64,7 +64,7 @@ reduction percentage.
 .TP
 .BI \-\-source = TYPE
 Explicitly select the documentation source:
-.BR man " (default), " doc ", or " headers .
+.BR man " (default), " doc ", " headers ", or " api .
 Forcibly selecting a source never falls back to another one.
 .TP
 .B \-\-mcp
@@ -88,7 +88,7 @@ Alias for
 Read the configuration file from
 .I PATH
 instead of
-.IR /etc/akaman/akamcp.conf .
+.IR /etc/sysref/sysref.conf .
 The config supplies the bearer key used by the webMCP HTTP server.
 .TP
 .B \-\-bench
@@ -111,7 +111,7 @@ headings; option-like queries (starting with
 .B \- )
 additionally list the nearest real option names.
 .SH SOURCES
-Three documentation sources are available; each is selected explicitly with
+Four documentation sources are available; each is selected explicitly with
 .B \-\-source
 and never falls back to another one.
 .TP
@@ -138,9 +138,25 @@ A query names a header first, optionally followed by symbols to find inside it
 (for example
 .BR "sys/socket connect" ).
 Results are whole declaration blocks matching every symbol, budget capped.
+.TP
+.B api
+C symbol declaration plus local API documentation. Query form is
+.BR "[header.h] symbol"
+(one C identifier, header optional). Headers are resolved as for
+.B headers
+under
+.IR /usr/include " and " /usr/local/include
+(SYSREF_INCLUDE_PATH override); documentation is matched locally under
+.IR /usr/share/doc ", " /usr/share/info ", and " /usr/share/man
+(SYSREF_DOC_PATH override) with same-package/version excerpts preferred.
+Only quoted local text is evidence; argument descriptions, returns,
+preconditions, side effects, errors and examples not stated there are
+unavailable. Preprocessor branches are retained, never evaluated as active
+configuration. Package ownership is reported from local metadata only; no
+installation is performed and no package is inferred.
 .SH MCP
 In MCP mode
-.B akaman
+.B sysref
 uses the Model Context Protocol over stdio and exposes exactly one tool:
 .PP
 .B  man(query, section?, source?)
@@ -152,13 +168,13 @@ required and
 and
 .B source
 optional.  Source accepts
-.BR man ", " doc ", or " headers .
+.BR man ", " doc ", " headers ", or " api .
 Roughly 95% or more of the full page bytes is removed per call: results are
 small declaration blocks, sections, or option entries instead of complete
 pages.
 .SH HTTP
 The webMCP HTTP server speaks JSON-RPC 2.0 over HTTP
-.RI ( akaman\ \-\-http
+.RI ( sysref\ \-\-http
 or
 .RB \-\-web ).
 Requests authenticate with a bearer key in the
@@ -167,18 +183,19 @@ header.  The key is read from the configuration file; without it the server
 refuses to start.
 .SH EXAMPLES
 .nf
-akaman grep
-akaman "grep -r"
-akaman "grep exit status"
-akaman "ip link set"
-akaman "gcc -fPIC"
-akaman -s 2 open
-akaman --source doc "sudo troubleshooting"
-akaman --source headers "sys/socket connect"
-akaman --stats "rsync --delete"
+sysref grep
+sysref "grep -r"
+sysref "grep exit status"
+sysref "ip link set"
+sysref "gcc -fPIC"
+sysref -s 2 open
+sysref --source doc "sudo troubleshooting"
+sysref --source headers "sys/socket connect"
+sysref --source api "stdio.h printf"
+sysref --stats "rsync --delete"
 .fi
 .PP
-.B akaman grep
+.B sysref grep
 returns the SYNOPSIS of
 .B grep(1)
 plus a SECTIONS map.  Adding an option name
@@ -186,7 +203,7 @@ plus a SECTIONS map.  Adding an option name
 returns that option's entry.  A named section
 .RB ( "grep exit status" )
 returns the section body.  A numeric section
-.RB ( "akaman\ \-s\ 2\ open" )
+.RB ( "sysref\ \-s\ 2\ open" )
 selects the system-call page
 .BR open(2) .
 .SH EXIT STATUS
@@ -221,7 +238,7 @@ This is a concrete statement about what the code does; it is not a universal
 security guarantee against every possible input class.
 .SH FILES
 .TP
-.I /etc/akaman/akamcp.conf
+.I /etc/sysref/sysref.conf
 Configuration file for the webMCP HTTP server.  A single
 .B APIKEY=
 assignment is read; blank lines and lines beginning with \fB#\fR are ignored.

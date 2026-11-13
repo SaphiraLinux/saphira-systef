@@ -31,6 +31,7 @@ typedef struct {
 
 /* source: NULL or "man" = native man pages (default); "doc" = /usr/share/doc */
 int akaman_run(const char *query, const char *section, const char *source, result *res);
+int sysref_api(const char *query, int semantics, result *res);
 void result_free(result *res);
 
 #endif

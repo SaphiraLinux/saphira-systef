@@ -1,15 +1,15 @@
-# akaman
+# sysref
 
 Minimal local man-page context for AI coding agents.
 
 Feeding a coding agent a complete man page costs thousands of tokens for a
-page whose useful part is a few hundred bytes. `akaman` answers one question —
+page whose useful part is a few hundred bytes. `sysref` answers one question —
 *"what is the exact syntax of `X`?"* — by extracting the smallest useful
 fragment from the **native man pages already installed on the host**, and
 serves that fragment over MCP or the command line.
 
 Single static C binary, no dependencies, no database, no network. Native `man`
-is authoritative: `akaman` never re-implements man's discovery or rendering.
+is authoritative: `sysref` never re-implements man's discovery or rendering.
 
 ## Results
 
@@ -50,7 +50,7 @@ the page's actual sections, so an agent knows what else exists without
 guessing section names:
 
 ```
-$ akaman grep
+$ sysref grep
 grep(1)
 SYNOPSIS
      grep [OPTION]... PATTERNS [FILE]...
@@ -60,15 +60,15 @@ SECTIONS: NAME | SYNOPSIS | DESCRIPTION | OPTIONS | REGULAR EXPRESSIONS | EXIT S
 
 Heading names are taken verbatim from the page (real top-level headings are
 indexed, not just a fixed whitelist), de-duplicated, and kept on one logical
-line. A specific query — `akaman grep -r`, `akaman "grep examples"`,
-`akaman "grep exit status"` — returns only its exact fragment and never the
+line. A specific query — `sysref grep -r`, `sysref "grep examples"`,
+`sysref "grep exit status"` — returns only its exact fragment and never the
 map. A query that matches nothing returns a compact no-match message plus the
 available headings; option-looking queries (starting `-`/`--`) additionally
 list up to five real nearby option names collected from the same page, never
 invented:
 
 ```
-$ akaman "curl --retr"
+$ sysref "curl --retr"
 curl(1)
 no match for "curl --retr" in curl(1)
 SECTIONS: NAME | SYNOPSIS | DESCRIPTION | URL | GLOBBING | ...
@@ -84,7 +84,7 @@ optional field: `source = "man" | "doc" | "headers"` (default `man`). A failed
 unchanged.
 
 ```
-$ akaman --source doc "sudo troubleshooting"
+$ sysref --source doc "sudo troubleshooting"
 sudo/TROUBLESHOOTING.md
 > You can specify the editor to use in visudo in the sudoers file.
 > See the 'editor' and 'env_editor' entries in the sudoers manual.
@@ -92,7 +92,7 @@ sudo/TROUBLESHOOTING.md
 
 Supported content: plain text, README/FAQ/INTRO, `.txt`, `.md`, and `.html`
 (via a small local tag stripper). No PDF/XML, no database, no index, no
-embeddings, no AI summaries, no network. A bare package query (`akaman
+embeddings, no AI summaries, no network. A bare package query (`sysref
 --source doc bash`) returns the available doc-file map. Query terms are
 matched against filenames, headings and exact terms in the text; the smallest
 complete paragraph matching the most terms wins. Package-manager-assisted
@@ -110,14 +110,14 @@ is never hardcoded, falling back to the legacy root; everywhere else
 `/usr/include`. Query form is `header symbol...`:
 
 ```
-$ akaman --source headers "stdio.h printf"
+$ sysref --source headers "stdio.h printf"
 #include <stdio.h>
 /* Maximum length of printf output for a NaN.  */
 # define _PRINTF_NAN_LEN_MAX 4
 ```
 
 ```
-$ akaman --source headers "sys/socket connect"
+$ sysref --source headers "sys/socket connect"
 #include <sys/socket.h>
 extern int connect (int __fd, __CONST_SOCKADDR_ARG __addr, socklen_t __len);
 ```
@@ -143,7 +143,7 @@ Linux/BSD (dynamic on macOS) so the same file runs across glibc, musl and BSD
 hosts.
 
 ```sh
-make            # build ./akaman
+make            # build ./sysref
 make test       # run the 162-test suite (requires man-db + curl)
 make bench      # print the benchmark table
 make clean
@@ -152,13 +152,13 @@ make clean
 ## Command line
 
 ```sh
-akaman QUERY [SECTION]            # print fragment to stdout
-akaman -s 2 open                  # numeric section = man section
-akaman "ip link set"              # resolves to ip-link(8)
-akaman --source doc "sudo troubleshooting"   # /usr/share/doc
-akaman --source doc bash          # bare package = doc-file map
-akaman --stats "rsync --delete"   # also print token metrics to stderr
-akaman --bench                    # benchmark table
+sysref QUERY [SECTION]            # print fragment to stdout
+sysref -s 2 open                  # numeric section = man section
+sysref "ip link set"              # resolves to ip-link(8)
+sysref --source doc "sudo troubleshooting"   # /usr/share/doc
+sysref --source doc bash          # bare package = doc-file map
+sysref --stats "rsync --delete"   # also print token metrics to stderr
+sysref --bench                    # benchmark table
 ```
 
 Query forms (in priority order, `source="man"`):
@@ -175,8 +175,8 @@ Query forms (`source="doc"`):
 
 | query                         | returns                                        |
 | ----------------------------- | ---------------------------------------------- |
-| `package`                     | doc-file map, e.g. `akaman --source doc bash` |
-| `package term...`             | smallest complete paragraph matching the terms, e.g. `akaman --source doc "sudo troubleshooting"` |
+| `package`                     | doc-file map, e.g. `sysref --source doc bash` |
+| `package term...`             | smallest complete paragraph matching the terms, e.g. `sysref --source doc "sudo troubleshooting"` |
 
 Exit codes: `0` match, `1` no page / render failure, `2` usage error.
 No-match output is one compact line, e.g.
@@ -184,7 +184,7 @@ No-match output is one compact line, e.g.
 
 ## MCP endpoint
 
-`akaman` exposes a single tool, `man(query, section?, source?)`, over two transports:
+`sysref` exposes a single tool, `man(query, section?, source?)`, over two transports:
 
 - **stdio** (`--mcp`) — for agents that launch local MCP servers (codex,
   opencode, Claude, ...).
@@ -212,7 +212,7 @@ Tool schema (static, ~67 tokens):
 ### codex
 
 ```sh
-codex mcp add akaman -- /usr/local/bin/akaman --mcp
+codex mcp add sysref -- /usr/local/bin/sysref --mcp
 ```
 
 ### opencode
@@ -224,9 +224,9 @@ Add the server to `opencode.json` (project or
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "akaman": {
+    "sysref": {
       "type": "local",
-      "command": ["/usr/local/bin/akaman", "--mcp"],
+      "command": ["/usr/local/bin/sysref", "--mcp"],
       "enabled": true
     }
   }
@@ -244,11 +244,11 @@ Notes:
 
 ### webMCP HTTP
 
-The HTTP transport requires an API key. Create `/etc/akaman/akamcp.conf`
+The HTTP transport requires an API key. Create `/etc/sysref/sysref.conf`
 (any path, overridable with `--conf`):
 
 ```
-# akaman webMCP config
+# sysref webMCP config
 APIKEY=sekrit-123
 ```
 
@@ -259,7 +259,7 @@ overwrite an existing key. Rotate the key if the file or its contents have
 ever been exposed.
 
 ```sh
-akaman --http=127.0.0.1:8931     # default address; --web and --http are aliases
+sysref --http=127.0.0.1:8931     # default address; --web and --http are aliases
 ```
 
 Authenticate every JSON-RPC request with a bearer key and POST:
