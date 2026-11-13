@@ -278,6 +278,24 @@ for f in ('a-foreign.txt', 'z-own.txt', 'a-prose.txt', 'z-code.txt', 'a-long.txt
     (docs / f).unlink()
 (inc / 'rank.h').unlink()
 
+# Sibling proximity: the header's co-declared macros score excerpts that
+# name the symbol next to its API family. Files sort against the expected
+# rank, so walk order cannot fake these assertions.
+(inc / 'sib.h').write_text('#define sib_sym(x) (x)\n#define sib_pal(x) (x)\n')
+(docs / 'a-foreign-alone.txt').write_text('sib_sym(x) here.\n')
+(docs / 'b-foreign-close.txt').write_text('sib_sym+sib_pal(y).\n')
+(docs / 'c-foreign-far.txt').write_text('sib_sym(x) or sib_pal elsewhere.\n')
+s = run('api', 'sib.h', 'sib_sym')
+check(s.index('b-foreign-close') < s.index('c-foreign-far') < s.index('a-foreign-alone'),
+      'sibling proximity outranks lone mentions')
+d = json.loads(run('api', 'sib.h', 'sib_sym', format='json'))
+check([e['path'].rsplit('/', 1)[-1] for e in d['data']['documentation']['excerpts']] ==
+      ['b-foreign-close.txt', 'c-foreign-far.txt', 'a-foreign-alone.txt'],
+      'json follows sibling rank order')
+for f in ('a-foreign-alone.txt', 'b-foreign-close.txt', 'c-foreign-far.txt'):
+    (docs / f).unlink()
+(inc / 'sib.h').unlink()
+
 # Generated search indexes match every term by construction and explain
 # nothing: excluded from excerpt candidates and the doc map alike.
 (docs / 'searchindex-zzz.js').write_text('idx_sym appears in this generated index.\n')

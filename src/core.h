@@ -33,6 +33,9 @@ typedef struct {
 	int ln;
 	int owner;
 	int code;
+	/* closest whole-word co-mention of a header sibling, in characters
+	 * (-1 when the window names no sibling); closer wins. */
+	int prox;
 	int freq;
 	size_t len;
 	int over;

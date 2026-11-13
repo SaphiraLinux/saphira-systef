@@ -20,14 +20,18 @@
 #define MATCH_LIMIT 8
 
 /* Rank: verified same-package/version first (applicability is proven), then
- * code-context matches (contract-like use, not prose), then repeated
- * mentions (denser treatment of the symbol), then concise excerpts (long
- * tables and boilerplate sink). Path and line close the order so the same
- * corpus always yields the same pages, whatever order the walk found. */
+ * code-context matches (contract-like use, not prose), then excerpts using
+ * the symbol next to its co-declared header siblings (same API family;
+ * closer wins), then repeated mentions (denser treatment), then concise
+ * excerpts (long tables and boilerplate sink). Path and line close the
+ * order so the same corpus always yields the same pages. */
 static int excerpt_rank(const void *a, const void *b) {
  const sysref_excerpt *x=a, *y=b;
  if (x->owner != y->owner) return y->owner - x->owner;
  if (x->code != y->code) return y->code - x->code;
+ { int xn = x->prox < 0, yn = y->prox < 0;
+   if (xn != yn) return xn - yn;
+   if (!xn && x->prox != y->prox) return x->prox < y->prox ? -1 : 1; }
  if (x->freq != y->freq) return y->freq - x->freq;
  if (x->len != y->len) return x->len < y->len ? -1 : 1;
  { int c=strcmp(x->path,y->path); if (c) return c; }
@@ -70,6 +74,11 @@ typedef struct {
   int page;
   /* Excerpts quoted per page (density knob, default API_PAGE_SIZE). */
   int ppsize;
+  /* Co-declared siblings from the first declaring header (macro names;
+   * the query symbol itself excluded). Excerpts using the symbol next to
+   * its API siblings describe the API family, not an incidental mention. */
+  char sib[48][64];
+  int nsib;
   /* Ranked excerpt buffer: accepted excerpts are collected during the scan
    * and emitted in rank order afterwards, so excerpts and lookahead share
    * one ordering. s.docs counts every accepted excerpt exactly; the buffer
@@ -322,6 +331,52 @@ static void excerpt_add(gbuf *out, const char *p, size_t n, int html);
 static unsigned long excerpt_hash(const char *p, size_t n);
 static int code_context(const char *p, size_t pos, size_t n, size_t sl);
 static int mentions_feature_test(const char *g);
+static int c_keyword(const char *w) {
+ static const char *kw[] = {"auto","break","case","char","const","continue","default","do","double","else","enum","extern","float","for","goto","if","inline","int","long","register","restrict","return","short","signed","sizeof","static","struct","switch","typedef","union","unsigned","void","volatile","while","_Bool","_Complex","_Imaginary",NULL};
+ for (int i=0;kw[i];i++) if (!strcmp(w,kw[i])) return 1;
+ return 0;
+}
+/* Co-declared macro siblings from the first declaring header: the other
+ * names its #define lines establish. Exact line match, no declarator
+ * parsing; C keywords, one-letter names and the query symbol never
+ * qualify. File order is deterministic, count bounded. */
+static void collect_siblings(search *s) {
+ if (!s->first[0]) return;
+ gbuf b; gbuf_init(&b);
+ if (!read_file(s->first,&b) || !b.p || b.len > (64u*1024u)) { gbuf_free(&b); return; }
+ size_t sl = strlen(s->symbol);
+ const char *p = b.p, *end = b.p + b.len;
+ while (p < end && s->nsib < 48) {
+  const char *e = p;
+  while (e < end && *e != '\n') e++;
+  const char *q = p;
+  while (q < e && (*q == ' ' || *q == '\t')) q++;
+  if (q < e && *q == '#') {
+   q++;
+   while (q < e && (*q == ' ' || *q == '\t')) q++;
+   if ((size_t)(e - q) >= 6 && !memcmp(q, "define", 6) &&
+       (q + 6 == e || q[6] == ' ' || q[6] == '\t' || q[6] == '(')) {
+    q += 6;
+    while (q < e && (*q == ' ' || *q == '\t')) q++;
+    const char *ns = q;
+    while (q < e && (isalnum((unsigned char)*q) || *q == '_')) q++;
+    if (q - ns > 1 && (size_t)(q - ns) < sizeof s->sib[0] &&
+        ((size_t)(q - ns) != sl || memcmp(ns, s->symbol, sl))) {
+     char tmp[64];
+     memcpy(tmp, ns, (size_t)(q - ns));
+     tmp[q - ns] = 0;
+     if (!c_keyword(tmp)) {
+      int dup = 0;
+      for (int d = 0; d < s->nsib; d++) if (!strcmp(s->sib[d], tmp)) { dup = 1; break; }
+      if (!dup) { memcpy(s->sib[s->nsib], tmp, sizeof s->sib[0]); s->nsib++; }
+     }
+    }
+   }
+  }
+  p = (*e == '\n') ? e + 1 : e;
+ }
+ gbuf_free(&b);
+}
 static void docs_visit(search *s,const char *path) {
  const char *name=strrchr(path,'/'); name=name?name+1:path;
  /* Man trees contain thousands of compressed files: function-name pages
@@ -363,18 +418,42 @@ static void docs_visit(search *s,const char *path) {
       if (s->nseen<32) s->seen[s->nseen++]=h;
       size_t sl=strlen(s->symbol);
       int code=0, freq=0;
+      size_t sympos[32];
+      int nsym=0;
       for (size_t k=i;k+sl<=stop;k++) {
        if (!memcmp(b.p+k,s->symbol,sl) &&
            (k==0 || !ident(b.p[k-1])) && (k+sl==stop || !ident(b.p[k+sl]))) {
         if (freq<999) freq++;
+        if (nsym<32) sympos[nsym++]=k;
         if (!code && code_context(b.p,k,stop,sl)) code=1;
        }
       }
       if (!matched_owner && s->pkg_known && !code) { s->skipped++; break; }
+      /* Closest whole-word co-mention of a header sibling, in characters:
+       * the symbol discussed next to its API family outranks a lone
+       * mention. -1 when the window names no sibling. */
+      int prox=-1;
+      if (s->nsib > 0 && nsym > 0) {
+       for (int d=0; d<s->nsib && prox!=0; d++) {
+        size_t ll=strlen(s->sib[d]);
+        if (ll==0) continue;
+        for (size_t m=i; m+ll<=stop; m++) {
+         if (!memcmp(b.p+m,s->sib[d],ll) &&
+             (m==0 || !ident(b.p[m-1])) && (m+ll==stop || !ident(b.p[m+ll]))) {
+          for (int t=0; t<nsym; t++) {
+           size_t se=sympos[t]+sl;
+           int g = (sympos[t] < m) ? (int)(m-se) : (int)(sympos[t]-(m+ll));
+           if (prox<0 || g<prox) prox=g;
+          }
+          if (prox==0) break;
+         }
+        }
+       }
+      }
       if (s->nrank < s->rankcap) {
        sysref_excerpt *er=&s->rank[s->nrank++];
        snprintf(er->path,sizeof er->path,"%s",path);
-       er->ln=ln; er->owner=matched_owner; er->code=code; er->freq=freq;
+       er->ln=ln; er->owner=matched_owner; er->code=code; er->prox=prox; er->freq=freq;
        er->len=stop-i; er->over=(stop-i>1500); er->html=is_html(path);
        if (!er->over) { memcpy(er->text,b.p+i,stop-i); er->text[stop-i]=0; }
        else er->text[0]=0;
@@ -712,8 +791,11 @@ int sysref_api(const char *query, int semantics, int page, int per_page, int for
     if(s.pkg_known) { gbuf_adds(&res->text,"PACKAGE: "); gbuf_adds(&res->text,s.pkg); gbuf_addch(&res->text,'\n'); }
     else gbuf_adds(&res->text,"PACKAGE: unknown from local metadata.\n");
    }
- if(semantics) {
-  s.files=0; s.readbytes=0;
+  if(semantics) {
+   /* Sibling names are harvested once the declaring header is known, so
+    * every excerpt is scored against the same API family. */
+   if (s.first[0]) collect_siblings(&s);
+   s.files=0; s.readbytes=0;
   const char *dr=root("SYSREF_DOC_PATH","/usr/share/doc:/usr/local/share/doc:/usr/share/info:/usr/share/man");
   rs=strdup(dr); sp=NULL;
   for(r=strtok_r(rs,":",&sp);r;r=strtok_r(NULL,":",&sp)) walk(&s,r,0,docs_visit);

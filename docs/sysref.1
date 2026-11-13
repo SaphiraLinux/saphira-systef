@@ -168,9 +168,11 @@ under
 (SYSREF_INCLUDE_PATH override); documentation is matched locally under
 .IR /usr/share/doc ", " /usr/share/info ", and " /usr/share/man
 (SYSREF_DOC_PATH override) and ranked before paging: same-package/version
-first, then code-context matches, then repeated mentions, then concise
-excerpts, with path and line closing the order so pages are deterministic.
-Generated search indexes (searchindex*.js, objects.inv) are never candidates.
+first, then code-context matches, then excerpts naming the symbol next to
+its co-declared header siblings (same API family; closer wins), then
+repeated mentions, then concise excerpts, with path and line closing the
+order so pages are deterministic. Generated search indexes
+(searchindex*.js, objects.inv) are never candidates.
 Only quoted local text is evidence; argument descriptions, returns,
 preconditions, side effects, errors and sample invocations not stated there
 are unavailable. Preprocessor branches are retained, never evaluated as active
@@ -195,8 +197,8 @@ feature_test_macros(7). Where a quoted manual states a documented
 signature for the symbol, its parameter list is compared with the header's
 own form position by position (PARAMETERS), so names present only in the
 manual are distinguished from the header text without inventing any.
-Documentation excerpts are ranked (same-package, code-context, repeated
-mentions, concise first); prose-only matches from other packages are
+Documentation excerpts are ranked (same-package, code-context, header-
+sibling proximity, repeated mentions, concise first); prose-only matches from other packages are
 counted but not quoted, and matches beyond the ranked excerpt buffer are
 counted with the overflow reported. Pages share one ordering between the
 quoted excerpts and the later-page lookahead.
