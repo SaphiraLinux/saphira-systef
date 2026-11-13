@@ -1,0 +1,237 @@
+.TH AKAMAN 1 "August 2026" "akaman 0.1.0" "User Commands"
+.SH NAME
+akaman \- minimal local man-page context for AI agents
+.SH SYNOPSIS
+.B akaman
+.RI QUERY " [" SECTION ]
+.br
+.B akaman
+.B \-s
+.RI SECTION " " QUERY
+.br
+.B akaman
+.B \-\-source
+.BR man " | " doc " | " headers " " QUERY
+.br
+.B akaman
+.B \-\-stats
+.RI QUERY " [" SECTION ]
+.br
+.B akaman
+.B \-\-bench
+.br
+.B akaman
+.B \-\-mcp
+.br
+.B akaman
+.B \-\-http
+.RI [ =ADDR ]
+.br
+.B akaman
+.B \-\-web
+.RI [ =ADDR ]
+.br
+.B akaman
+.B \-\-conf
+.I PATH
+.SH DESCRIPTION
+.B akaman
+answers one question \(em "what is the exact syntax of
+.I X
+?" \(em by extracting the smallest useful fragment from the native man pages,
+package documentation, or system headers already installed on the host, and
+serves that fragment over MCP, HTTP, or the command line.
+.PP
+It is a single static C binary with no dependencies, no database, no index,
+no embeddings, no AI summaries, and no network.  Native
+.B man
+is authoritative: akaman never re-implements man's discovery or rendering.
+Extraction works on whole lines only, and results are budget-capped
+(\(<= ~400 tokens by default) so replies stay small.
+.PP
+The command name of a query is matched against locally installed manual pages
+through native man's own discovery (configured via
+.IR MANPATH ,
+.IR /etc/man_db.conf ,
+and the per-section search paths).  A failed lookup never silently switches
+documentation source.
+.SH OPTIONS
+.TP
+.B \-\-stats
+Print the result followed by token metrics on standard error: page name,
+full bytes, returned bytes, estimated full and returned tokens, and the
+reduction percentage.
+.TP
+.BI \-\-source = TYPE
+Explicitly select the documentation source:
+.BR man " (default), " doc ", or " headers .
+Forcibly selecting a source never falls back to another one.
+.TP
+.B \-\-mcp
+Run as a Model Context Protocol (MCP) stdio server.  Speaks JSON-RPC over
+standard input/output and exposes a single tool (see
+.BR "MCP" " section)."
+.TP
+.BI \-\-http[ =ADDR ]
+Run as a webMCP HTTP/JSON-RPC server.  ADDR defaults to
+.IR 127.0.0.1:8931 .
+Requires
+.B APIKEY
+to be defined in the config file (see
+.BR "HTTP" " and " "FILES" " sections)."
+.TP
+.BI \-\-web[ =ADDR ]
+Alias for
+.BR \-\-http .
+.TP
+.BI \-\-conf = PATH
+Read the configuration file from
+.I PATH
+instead of
+.IR /etc/akaman/akamcp.conf .
+The config supplies the bearer key used by the webMCP HTTP server.
+.TP
+.B \-\-bench
+Print a benchmark table of the built-in query corpus with page, byte, token,
+and reduction measurements, then exit.
+.TP
+.BI \-s " SECTION"
+Select a specific manual section.  A numeric section (for example
+.B 2
+for system calls) selects the man page in that section; an alphabetic value
+is treated as a named section heading (for example
+.BR examples ,
+.BR exit\ status ).
+.PP
+A bare command query returns the SYNOPSIS plus a one-line
+SECTIONS map (for example
+.B "SECTIONS: NAME | SYNOPSIS | ..."
+) for progressive disclosure.  A query matching nothing returns the available
+headings; option-like queries (starting with
+.B \- )
+additionally list the nearest real option names.
+.SH SOURCES
+Three documentation sources are available; each is selected explicitly with
+.B \-\-source
+and never falls back to another one.
+.TP
+.B man
+(default) Native manual pages, resolved and rendered by the system
+.B man
+command.  GNU man-db long options are used when the local man understands
+them, otherwise BSD/macOS-style invocation is used automatically.
+.TP
+.B doc
+Package documentation already installed under
+.IR /usr/share/doc :
+plain text, READMEs, FAQ/INTRO, .txt, .md, and .html files.  Query terms are
+matched against filenames, headings, and exact terms in the text; the smallest
+complete paragraph matching the most terms wins.
+.TP
+.B headers
+System C/C++ headers, resolved via the active include root (the macOS SDK path
+when running under
+.BR xcrun ,
+otherwise
+.IR /usr/include ).
+A query names a header first, optionally followed by symbols to find inside it
+(for example
+.BR "sys/socket connect" ).
+Results are whole declaration blocks matching every symbol, budget capped.
+.SH MCP
+In MCP mode
+.B akaman
+uses the Model Context Protocol over stdio and exposes exactly one tool:
+.PP
+.B  man(query, section?, source?)
+.PP
+with
+.B query
+required and
+.B section
+and
+.B source
+optional.  Source accepts
+.BR man ", " doc ", or " headers .
+Roughly 95% or more of the full page bytes is removed per call: results are
+small declaration blocks, sections, or option entries instead of complete
+pages.
+.SH HTTP
+The webMCP HTTP server speaks JSON-RPC 2.0 over HTTP
+.RI ( akaman\ \-\-http
+or
+.RB \-\-web ).
+Requests authenticate with a bearer key in the
+.B Authorization
+header.  The key is read from the configuration file; without it the server
+refuses to start.
+.SH EXAMPLES
+.nf
+akaman grep
+akaman "grep -r"
+akaman "grep exit status"
+akaman "ip link set"
+akaman "gcc -fPIC"
+akaman -s 2 open
+akaman --source doc "sudo troubleshooting"
+akaman --source headers "sys/socket connect"
+akaman --stats "rsync --delete"
+.fi
+.PP
+.B akaman grep
+returns the SYNOPSIS of
+.B grep(1)
+plus a SECTIONS map.  Adding an option name
+.RB ( "grep \-r" )
+returns that option's entry.  A named section
+.RB ( "grep exit status" )
+returns the section body.  A numeric section
+.RB ( "akaman\ \-s\ 2\ open" )
+selects the system-call page
+.BR open(2) .
+.SH EXIT STATUS
+.TP
+.B 0
+A result was produced.
+.TP
+.B 1
+The lookup failed (for example, no match, missing page, or a malformed
+configuration at webMCP startup).
+.TP
+.B 2
+The command line was invalid (unknown option, missing query, or too many
+arguments).
+.SH SECURITY
+The following behaviour is proven and covered by the test suite:
+.PP
+.TP
+\(bu
+Queries are not executed through a shell.
+.TP
+\(bu
+External commands (native
+.BR man ,
+.BR xcrun ,
+package helpers) are executed with argv-style execution, not through a shell.
+.TP
+\(bu
+Injection cases are covered by tests.
+.PP
+This is a concrete statement about what the code does; it is not a universal
+security guarantee against every possible input class.
+.SH FILES
+.TP
+.I /etc/akaman/akamcp.conf
+Configuration file for the webMCP HTTP server.  A single
+.B APIKEY=
+assignment is read; blank lines and lines beginning with \fB#\fR are ignored.
+.TP
+.I /usr/share/man
+Typical native man page search path in addition to any site-local
+.IR /usr/local/share/man ,
+.IR MANPATH ,
+and libc-man_db entries.
+.SH SEE ALSO
+.BR man (1),
+.BR man-db (5),
+.BR groff (1)
