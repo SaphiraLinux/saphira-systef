@@ -1,5 +1,5 @@
-#ifndef AKAMAN_JSON_H
-#define AKAMAN_JSON_H
+#ifndef SYSREF_JSON_H
+#define SYSREF_JSON_H
 
 #include "core.h"
 

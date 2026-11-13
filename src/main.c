@@ -113,7 +113,7 @@ int main(int argc, char **argv) {
 
 	result res;
 	memset(&res, 0, sizeof res);
-	int st = akaman_run(query, section, source, &res);
+	int st = sysref_run(query, section, source, &res);
 	if (res.text.p) write(1, res.text.p, res.text.len);
 	if (stats) {
 		double reduction = res.full_bytes ? 100.0 * (1.0 - (double)res.text.len / (double)res.full_bytes) : 0.0;

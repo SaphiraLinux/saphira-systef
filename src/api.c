@@ -293,7 +293,7 @@ static void packages(search *s, const char *missing) {
  if(!s->docs) gbuf_adds(&s->res->text,"Documentation provider unknown; header ownership does not establish a documentation package. No installation command verified.\n");
 }
 int sysref_api(const char *query, int semantics, result *res) {
- char q[AKAMAN_MAX_QUERY_BYTES+1]; snprintf(q,sizeof q,"%s",query);
+ char q[SYSREF_MAX_QUERY_BYTES+1]; snprintf(q,sizeof q,"%s",query);
  char *save=NULL,*first=strtok_r(q," \t\n",&save),*second=strtok_r(NULL," \t\n",&save),*extra=strtok_r(NULL," \t\n",&save);
  if(!first || extra) { gbuf_adds(&res->text,"Use [header.h] symbol (one C identifier).\n"); res->status=1; return 1; }
  const char *sym=second?second:first;

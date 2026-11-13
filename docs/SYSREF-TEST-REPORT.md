@@ -1,4 +1,4 @@
-# Akaman MCP Server Test Report
+# Sysref MCP Server Test Report
 
 Date: 2026-08-11
 
@@ -42,7 +42,7 @@ CLI and MCP transports and through the headers source. It was treated as data,
 returned a rejection/no-match response, and produced valid JSON with MCP text
 content. No command or file was created by the injection tests.
 
-Akaman does not contain a SQL database or HTML renderer, so the SQLi checks are
+Sysref does not contain a SQL database or HTML renderer, so the SQLi checks are
 input-handling and non-execution tests rather than database-query injection
 tests; the XSS checks verify that the server does not execute or corrupt the
 payload and that MCP framing remains valid.

@@ -118,7 +118,7 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 	} else if (strcmp(m, "ping") == 0) {
 		jsonrpc_result(resp, id->raw, id->rawlen, "{}");
 	} else if (strcmp(m, "tools/list") == 0) {
-		jsonrpc_result(resp, id->raw, id->rawlen, AKAMAN_TOOLS_LIST_JSON);
+		jsonrpc_result(resp, id->raw, id->rawlen, SYSREF_TOOLS_LIST_JSON);
 	} else if (strcmp(m, "tools/call") == 0) {
 		jv *params = jv_get(root, "params");
 		jv *args = params ? jv_get(params, "arguments") : NULL;
@@ -150,7 +150,7 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		}
 		result res;
 		memset(&res, 0, sizeof res);
-		akaman_run(q->str, (sec && sec->str) ? sec->str : NULL,
+		sysref_run(q->str, (sec && sec->str) ? sec->str : NULL,
 		           (src && src->str) ? src->str : NULL, &res);
 		/* Opt-in metrics footer. Default output is untouched, so the common
 		 * case pays nothing for this. The point is that an agent can hold
@@ -561,7 +561,7 @@ int run_bench(void) {
 		if (cases[i].s && strcmp(cases[i].s, "doc") == 0) src = "doc";
 		else if (cases[i].s && strcmp(cases[i].s, "headers") == 0) src = "headers";
 		const char *sec = src ? NULL : cases[i].s;
-		int st = akaman_run(cases[i].q, sec, src, &res);
+		int st = sysref_run(cases[i].q, sec, src, &res);
 		char page[160];
 		snprintf(page, sizeof page, "%s(%s)", res.pagename, res.pagesec);
 		size_t ft = EST_TOKENS(res.full_bytes);
@@ -579,8 +579,8 @@ int run_bench(void) {
 	}
 	(void)tot_full;
 	(void)tot_ret;
-	printf("\nstatic MCP tool schema: %zu bytes, ~%zu tokens\n", sizeof(AKAMAN_TOOLS_LIST_JSON) - 1,
-	       EST_TOKENS(sizeof(AKAMAN_TOOLS_LIST_JSON) - 1));
+	printf("\nstatic MCP tool schema: %zu bytes, ~%zu tokens\n", sizeof(SYSREF_TOOLS_LIST_JSON) - 1,
+	       EST_TOKENS(sizeof(SYSREF_TOOLS_LIST_JSON) - 1));
 	printf("(per call: one tools/list payload + one small JSON-RPC envelope)\n");
 	return 0;
 }

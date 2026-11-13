@@ -1,4 +1,4 @@
-# AKAMAN Context Reduction
+# SYSREF Context Reduction
 
 ## Purpose
 
@@ -7,7 +7,7 @@ feeding an entire man page or documentation file into model context is wasteful
 when the agent usually needs only one syntax block, option, section, or
 declaration.
 
-AKAMAN performs that retrieval locally and returns only the smallest useful
+SYSREF performs that retrieval locally and returns only the smallest useful
 authoritative fragment. This is context reduction, not binary or text
 compression: the source documentation is left unchanged, while the amount of
 documentation placed in model context is reduced.
@@ -19,7 +19,7 @@ The representative benchmark contains 13 queries.
 | Measure | Result |
 | --- | ---: |
 | Source documentation | 1,210,101 estimated tokens |
-| AKAMAN returned | 1,937 estimated tokens |
+| SYSREF returned | 1,937 estimated tokens |
 | Tokens avoided | 1,208,164 |
 | Overall context reduction | 99.84% |
 | Source bytes | 4,840,396 |
@@ -29,7 +29,7 @@ The token figures are estimated using the methodology below.
 
 ## Benchmark table
 
-| Query | Page | Source estimated tokens → AKAMAN estimated tokens | Context reduction |
+| Query | Page | Source estimated tokens → SYSREF estimated tokens | Context reduction |
 | --- | --- | ---: | ---: |
 | `bash` | `bash(1)` | 104475 → 112 | 99.9% |
 | `gcc` | `gcc(1)` | 366562 → 130 | >99.9% |
@@ -50,7 +50,7 @@ Both GCC rows retain the supplied `>99.9%` notation.
 ## Practical examples
 
 For `rsync --delete`, the full local `rsync(1)` manual is approximately
-65,026 estimated tokens. AKAMAN returns 107 estimated tokens covering:
+65,026 estimated tokens. SYSREF returns 107 estimated tokens covering:
 
 - `--delete`
 - `--delete-before`
@@ -62,14 +62,14 @@ For `rsync --delete`, the full local `rsync(1)` manual is approximately
 That is a 99.8% context reduction.
 
 For `gcc -fPIC`, the full local `gcc(1)` manual is approximately 366,562
-estimated tokens. AKAMAN returns 125 estimated tokens, a reduction of >99.9%.
+estimated tokens. SYSREF returns 125 estimated tokens, a reduction of >99.9%.
 
 ## How it works
 
 ```text
 Local documentation
         ↓
-      AKAMAN
+      SYSREF
         ↓
 smallest authoritative fragment
         ↓
@@ -77,7 +77,7 @@ smallest authoritative fragment
 ```
 
 Reading a large man page locally does not consume model-context tokens. Only
-the returned AKAMAN fragment enters the model context.
+the returned SYSREF fragment enters the model context.
 
 ## Current sources
 
@@ -87,7 +87,7 @@ the returned AKAMAN fragment enters the model context.
 | `doc` | Installed `/usr/share/doc` documentation |
 | `headers` | Installed C/C++ system headers |
 
-The installed system remains authoritative. AKAMAN uses no copied
+The installed system remains authoritative. SYSREF uses no copied
 documentation corpus, vector database, embeddings, cloud lookup, or required
 AI-generated summary.
 
@@ -119,4 +119,4 @@ sections, bundled short options, progressive disclosure, `/usr/share/doc`,
 system headers, token budgets, malformed input, command-injection cases,
 CLI/MCP parity, MCP protocol handling, and HTTP authentication behaviour.
 
-The documentation already knows the answer. AKAMAN makes sure the model only receives the part it actually needs.
+The documentation already knows the answer. SYSREF makes sure the model only receives the part it actually needs.

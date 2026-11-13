@@ -57,7 +57,7 @@ install: all
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 $(BIN) $(DESTDIR)$(BINDIR)/$(BIN)
 	install -d $(DESTDIR)$(MAN1DIR)
-	install -m 0644 docs/akaman.1 $(DESTDIR)$(MAN1DIR)/$(BIN).1
+	install -m 0644 docs/sysref.1 $(DESTDIR)$(MAN1DIR)/$(BIN).1
 	install -d $(DESTDIR)$(CONFDIR)
 	if test -e $(DESTDIR)$(CONF); then chmod 0600 $(DESTDIR)$(CONF); else install -m 0600 /dev/null $(DESTDIR)$(CONF); fi
 

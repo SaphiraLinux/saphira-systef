@@ -1,22 +1,22 @@
-# Akaman: The MCP Server That Gives Coding Agents the Right Man Page Fragment
+# Sysref: The MCP Server That Gives Coding Agents the Right Man Page Fragment
 
 Coding agents rarely need an entire manual page. They usually need one fact:
 the syntax for an option, the grammar for a subcommand, the meaning of an exit
-status, or the declaration for a C function. Akaman is a small MCP server built
+status, or the declaration for a C function. Sysref is a small MCP server built
 around that observation. It searches the native documentation already installed
 on the machine and returns the smallest useful fragment to the agent.
 
-That makes Akaman less like a documentation chatbot and more like a precise
+That makes Sysref less like a documentation chatbot and more like a precise
 local reference tool. It does not copy a documentation corpus, build an index,
 call a cloud service, use embeddings, or invent a summary. The installed man
 pages, package documentation, and system headers remain the authority.
 
 ## The headline number: less context, same source
 
-Akaman's benchmark uses a simple, consistent estimate of four bytes per token.
+Sysref's benchmark uses a simple, consistent estimate of four bytes per token.
 Across the current benchmark, the reduction is substantial:
 
-| Query | Source estimate | Akaman result | Reduction |
+| Query | Source estimate | Sysref result | Reduction |
 | --- | ---: | ---: | ---: |
 | `gcc -fPIC` | 366,562 tokens | 125 | >99.9% |
 | `rsync --delete` | 65,026 | 107 | 99.8% |
@@ -26,7 +26,7 @@ Across the current benchmark, the reduction is substantial:
 | `tar --strip-components` | 10,959 | 29 | 99.7% |
 
 The result is not text compression. The original documentation is untouched;
-Akaman simply avoids placing irrelevant material into the model context. In a
+Sysref simply avoids placing irrelevant material into the model context. In a
 13-query representative benchmark, the measured/documented total is approximately
 1,210,101 source tokens versus 1,937 returned tokens: a 99.84% reduction.
 These are estimates based on bytes divided by four, not a measured model
@@ -41,7 +41,7 @@ as `grep -r` returns the matching option entry. Queries such as `ip link set`,
 `grep examples`, and `open(2)` resolve to subcommand grammar, named sections,
 and system-call documentation respectively.
 
-Akaman also exposes two explicit local sources beyond man pages:
+Sysref also exposes two explicit local sources beyond man pages:
 
 - `doc` searches installed package documentation such as Markdown, text, and
   HTML files under `/usr/share/doc`.
@@ -53,7 +53,7 @@ over HTTP with bearer-key authentication for network clients.
 
 ## How good is it to use from Codex?
 
-From a code-review and direct MCP smoke-test perspective, Akaman is good at the part that matters most:
+From a code-review and direct MCP smoke-test perspective, Sysref is good at the part that matters most:
 getting a precise answer with very little interaction overhead. The tool has
 one clearly named operation, a small schema, predictable text output, and
 useful recovery information when a query misses. The progressive-disclosure
@@ -68,7 +68,7 @@ documentation system. Focused answers are capped around 400 estimated tokens,
 so an agent can use the tool repeatedly without allowing reference material to
 take over the conversation.
 
-This review did not run a long autonomous Codex task with Akaman enabled, so it
+This review did not run a long autonomous Codex task with Sysref enabled, so it
 cannot honestly claim that an agent has already saved a specific number of
 tokens in production use. It can claim that the tool returned much smaller
 reference payloads in the benchmark and direct checks.
@@ -95,7 +95,7 @@ investigated before advertising the suite as completely green.
 
 ## The trade-off
 
-Akaman is deliberately not a general documentation search engine. It only
+Sysref is deliberately not a general documentation search engine. It only
 knows what is installed locally, and its answer quality depends on the host's
 man pages and package docs. It also returns source fragments rather than
 explaining them in natural language. That is a feature when the agent needs
@@ -104,13 +104,13 @@ or broad conceptual guidance will need another tool.
 
 ## Verdict
 
-Akaman solves a narrow problem unusually well. It gives coding agents local,
+Sysref solves a narrow problem unusually well. It gives coding agents local,
 authoritative reference material while spending tens or hundreds of tokens
 instead of thousands—or, in the GCC example, hundreds of thousands. Its small
 surface, zero-network default, native documentation strategy, and strong input
 handling make it easy to understand and easy to trust.
 
 The remaining HTTP test failure keeps the verdict provisional for the complete
-transport story. For local Codex use over stdio, however, Akaman already looks
+transport story. For local Codex use over stdio, however, Sysref already looks
 like a highly practical MCP server: fast enough, minimal enough, and focused on
 exactly the context an agent needs.

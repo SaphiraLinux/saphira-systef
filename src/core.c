@@ -82,8 +82,8 @@ static int run_cmd(char *const argv[], char **out, size_t *outlen, int *status) 
 		n = read(to[0], buf, sizeof buf);
 		if (n > 0) {
 			if (!o.failed) {
-				if (o.len > AKAMAN_MAX_COMMAND_OUTPUT ||
-				    (size_t)n > AKAMAN_MAX_COMMAND_OUTPUT - o.len)
+				if (o.len > SYSREF_MAX_COMMAND_OUTPUT ||
+				    (size_t)n > SYSREF_MAX_COMMAND_OUTPUT - o.len)
 					o.failed = 1;
 				else
 					gbuf_addn(&o, buf, (size_t)n);
@@ -1301,7 +1301,7 @@ static void doc_file_map(gbuf *out, const docfile *files, int nfiles) {
 	gbuf_addch(out, '\n');
 }
 
-static int akaman_run_doc(const char *query, result *res) {
+static int sysref_run_doc(const char *query, result *res) {
 	toks t;
 	memset(&t, 0, sizeof t);
 	if (!split_tokens(query, &t)) {
@@ -1448,7 +1448,7 @@ static int akaman_run_doc(const char *query, result *res) {
 /* ------------------------------------------------------------------ */
 void result_free(result *res) { gbuf_free(&res->text); }
 
-int akaman_run(const char *query, const char *section, const char *source, result *res) {
+int sysref_run(const char *query, const char *section, const char *source, result *res) {
 	memset(res, 0, sizeof *res);
 	gbuf_init(&res->text);
 	if (!query || !query[0]) {
@@ -1456,7 +1456,7 @@ int akaman_run(const char *query, const char *section, const char *source, resul
 		res->status = 1;
 		return 1;
 	}
-	if (strlen(query) > AKAMAN_MAX_QUERY_BYTES) {
+	if (strlen(query) > SYSREF_MAX_QUERY_BYTES) {
 		gbuf_adds(&res->text, "query too large\n");
 		res->status = 1;
 		return 1;
@@ -1467,7 +1467,7 @@ int akaman_run(const char *query, const char *section, const char *source, resul
 		return 1;
 	}
 	if (source && strcmp(source, "api") == 0) return sysref_api(query, 1, res);
-	if (source && strcmp(source, "doc") == 0) return akaman_run_doc(query, res);
+	if (source && strcmp(source, "doc") == 0) return sysref_run_doc(query, res);
 	if (source && strcmp(source, "headers") == 0) return sysref_api(query, 0, res);
 	if (source && strcmp(source, "man") != 0) {
 		gbuf_adds(&res->text, "unknown source \"");

@@ -257,7 +257,7 @@ out=$(run '$(touch ${TMPDIR:-/build/tmp}/sysref_pwn2)')
 t "command substitution query exit 1" "$?" "1" "1"
 t "no file created by $() injection" "$(test -f ${TMPDIR:-/build/tmp}/sysref_pwn2 && echo yes || echo no)" "no" "no"
 
-# SQL injection-shaped input must remain inert. Akaman has no database, but
+# SQL injection-shaped input must remain inert. Sysref has no database, but
 # these payloads still exercise tokenisation, page resolution, and error
 # handling at the public CLI boundary.
 for q in "' OR '1'='1" "\" OR 1=1 --" "x' UNION SELECT NULL--"; do
