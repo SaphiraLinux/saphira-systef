@@ -35,6 +35,7 @@ static const char *usage =
     "                                 requires APIKEY in /etc/sysref/sysref.conf\n"
     "  sysref --conf PATH             config file path (APIKEY for webMCP)\n"
     "  sysref --page N                  show page N of a multi-page reply (default 1)\n"
+    "  sysref --per-page N              api excerpts per page, 1-10 (default 3)\n"
     "  sysref --bench                 benchmark table\n"
     "\n"
     "  QUERY forms: command [option] | command [section-name] | command subcommand\n"
@@ -67,6 +68,8 @@ int main(int argc, char **argv) {
 	const char *source = NULL;
 	int stats = 0;
 	int page = 1;
+	int per_page = 3;
+	int per_page_given = 0;
 
 	for (int i = 1; i < argc; i++) {
 		char *a = argv[i];
@@ -81,6 +84,14 @@ int main(int argc, char **argv) {
 		} else if (strcmp(a, "--page") == 0 && i + 1 < argc) {
 			page = parse_page(argv[++i]);
 			if (page < 1) { fputs("sysref: invalid --page value (positive integer required)\n", stderr); return 2; }
+		} else if (strncmp(a, "--per-page=", 11) == 0) {
+			per_page = parse_page(a + 11);
+			per_page_given = 1;
+			if (per_page < 1 || per_page > 10) { fputs("sysref: invalid --per-page value (integer 1-10 required)\n", stderr); return 2; }
+		} else if (strcmp(a, "--per-page") == 0 && i + 1 < argc) {
+			per_page = parse_page(argv[++i]);
+			per_page_given = 1;
+			if (per_page < 1 || per_page > 10) { fputs("sysref: invalid --per-page value (integer 1-10 required)\n", stderr); return 2; }
 		}
 		else if (strcmp(a, "--conf") == 0 && i + 1 < argc) conf = argv[++i];
 		else if (strcmp(a, "--web") == 0 || strcmp(a, "--http") == 0) {
@@ -131,10 +142,14 @@ int main(int argc, char **argv) {
 		fputs(usage, stderr);
 		return 2;
 	}
+	if (per_page_given && (!source || strcmp(source, "api") != 0)) {
+		fputs("sysref: --per-page applies only to --source api\n", stderr);
+		return 2;
+	}
 
 	result res;
 	memset(&res, 0, sizeof res);
-	int st = sysref_run(query, section, source, page, &res);
+	int st = sysref_run(query, section, source, page, per_page, &res);
 	if (res.text.p) write(1, res.text.p, res.text.len);
 	if (stats) {
 		double reduction = res.full_bytes ? 100.0 * (1.0 - (double)res.text.len / (double)res.full_bytes) : 0.0;

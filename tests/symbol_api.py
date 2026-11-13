@@ -24,10 +24,12 @@ def check(ok, name):
     checks += 1
     print('ok', name)
 
-def run(source, *query, expected=0, custom=None, page=None):
+def run(source, *query, expected=0, custom=None, page=None, per_page=None):
     args = [binary, '--source', source, *query]
     if page is not None:
         args += ['--page', str(page)]
+    if per_page is not None:
+        args += ['--per-page', str(per_page)]
     p = subprocess.run(args, env=custom or env,
                        capture_output=True, text=True, timeout=30)
     check(p.returncode == expected, f'{source} {query} exit {p.returncode}: {p.stderr}')
@@ -187,6 +189,19 @@ check('page=2' in s and 'total_pages=2' in s, 'page 2 navigation')
 check('next_page' not in s, 'no next page on last page')
 s = run('api', 'big_sym', expected=1, page=3)
 check('out of range (1-2)' in s, 'page out of range names valid range')
+s = run('api', 'big_sym', expected=1, per_page=10)
+check(s.count('DOCUMENT: ') == 4, 'per_page widens the excerpt window')
+check('page=1' in s and 'total_pages=1' in s, 'wide page collapses to one page')
+check('next_page' not in s, 'no next page when all excerpts fit')
+check('DOCUMENTATION: 4 local excerpt(s) quoted above.' in s, 'wide count reflects paging')
+s = run('api', 'big_sym', expected=1)
+check('Later pages lead with: page 2: ' in s, 'later-page lead names the jump target')
+s = run('api', 'big_sym', expected=2, per_page=0)
+check('invalid --per-page value' in s, 'per_page rejects zero')
+s = run('api', 'big_sym', expected=2, per_page=11)
+check('invalid --per-page value' in s, 'per_page rejects above max')
+s = run('man', 'demo', expected=2, per_page=5)
+check('--per-page applies only to --source api' in s, 'per_page scoped to api')
 for i in (1, 2, 3, 4):
     (docs / f'big{i}.txt').unlink()
 s = run('doc', 'fixture')
@@ -271,6 +286,10 @@ response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subno
 check('out of range' in response['result']['content'][0]['text'], 'MCP api page out of range')
 response = rpc('tools/call', {'name': 'doc', 'arguments': {'query': 'fixture', 'page': 'two'}})
 check('error' in response, 'MCP page rejects non-integer')
+response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize', 'per_page': 99}})
+check('error' in response, 'MCP per_page rejects above max')
+response = rpc('tools/call', {'name': 'api', 'arguments': {'symbol': 'mpfr_subnormalize', 'per_page': 'many'}})
+check('error' in response, 'MCP per_page rejects non-integer')
 response = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'mpfr_subnormalize', 'source': 'api'}})
 check(signature in response['result']['content'][0]['text'], 'MCP legacy man source=api')
 s = rpc('tools/call', {'name': 'man', 'arguments': {'query': 'demo'}})

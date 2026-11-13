@@ -38,6 +38,7 @@
 "\"symbol\":{\"type\":\"string\"}," \
 "\"header\":{\"type\":\"string\"}," \
 "\"page\":{\"type\":\"integer\"}," \
+"\"per_page\":{\"type\":\"integer\"}," \
 "\"stats\":{\"type\":\"boolean\"}}," \
 "\"required\":[]}}" \
 "]}"

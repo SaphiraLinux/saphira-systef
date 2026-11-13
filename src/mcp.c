@@ -131,6 +131,7 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		jv *hdr = args ? jv_get(args, "header") : NULL;
 		jv *starg = args ? jv_get(args, "stats") : NULL;
 		jv *pg = args ? jv_get(args, "page") : NULL;
+		jv *pp = args ? jv_get(args, "per_page") : NULL;
 		/* jv: t==1 is bool and the value lives in .b (not .num). A stringified
 		 * boolean is accepted too, because an agent that stringifies its
 		 * arguments should get the metrics rather than a silent no-op. */
@@ -152,6 +153,17 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 				return 1;
 			}
 			page = (int)pg->num;
+		}
+		/* per_page is optional (default 3); a present per_page must be an
+		 * integer 1-10. Only the api tool declares it in its schema. */
+		int per_page = 3;
+		if (pp) {
+			if (pp->t != 2 || pp->num != (double)(int)pp->num || pp->num < 1 || pp->num > 10) {
+				jsonrpc_error(resp, id->raw, id->rawlen, -32602, "invalid per_page (integer 1-10 required)");
+				jv_free(root);
+				return 1;
+			}
+			per_page = (int)pp->num;
 		}
 		if (!name || name->t != 3 || !name->str ||
 		    (strcmp(name->str, "man") != 0 && strcmp(name->str, "doc") != 0 &&
@@ -191,10 +203,10 @@ static int handle_mcp(const char *body, size_t len, gbuf *resp) {
 		}
 		result res;
 		memset(&res, 0, sizeof res);
-		if (!is_man && !is_doc) sysref_api(apiq, 1, page, &res);
-		else if (is_doc) sysref_run(q->str, NULL, "doc", page, &res);
+		if (!is_man && !is_doc) sysref_api(apiq, 1, page, per_page, &res);
+		else if (is_doc) sysref_run(q->str, NULL, "doc", page, 3, &res);
 		else sysref_run(q->str, (sec && sec->str) ? sec->str : NULL,
-		           (src && src->str) ? src->str : NULL, page, &res);
+		           (src && src->str) ? src->str : NULL, page, per_page, &res);
 		/* Opt-in metrics footer. Default output is untouched, so the common
 		 * case pays nothing for this. The point is that an agent can hold
 		 * this tool's central claim -- that it returns a fraction of a page --
@@ -604,7 +616,7 @@ int run_bench(void) {
 		if (cases[i].s && strcmp(cases[i].s, "doc") == 0) src = "doc";
 		else if (cases[i].s && strcmp(cases[i].s, "headers") == 0) src = "headers";
 		const char *sec = src ? NULL : cases[i].s;
-		int st = sysref_run(cases[i].q, sec, src, 1, &res);
+		int st = sysref_run(cases[i].q, sec, src, 1, 3, &res);
 		char page[160];
 		snprintf(page, sizeof page, "%s(%s)", res.pagename, res.pagesec);
 		size_t ft = EST_TOKENS(res.full_bytes);

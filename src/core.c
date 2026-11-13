@@ -1592,7 +1592,7 @@ static int sysref_run_doc(const char *query, int page, result *res) {
 /* ------------------------------------------------------------------ */
 void result_free(result *res) { gbuf_free(&res->text); }
 
-int sysref_run(const char *query, const char *section, const char *source, int page, result *res) {
+int sysref_run(const char *query, const char *section, const char *source, int page, int per_page, result *res) {
 	memset(res, 0, sizeof *res);
 	gbuf_init(&res->text);
 	if (page < 1) page = 1;
@@ -1611,9 +1611,9 @@ int sysref_run(const char *query, const char *section, const char *source, int p
 		res->status = 1;
 		return 1;
 	}
-	if (source && strcmp(source, "api") == 0) return sysref_api(query, 1, page, res);
+	if (source && strcmp(source, "api") == 0) return sysref_api(query, 1, page, per_page, res);
 	if (source && strcmp(source, "doc") == 0) return sysref_run_doc(query, page, res);
-	if (source && strcmp(source, "headers") == 0) return sysref_api(query, 0, page, res);
+	if (source && strcmp(source, "headers") == 0) return sysref_api(query, 0, page, per_page, res);
 	if (source && strcmp(source, "man") != 0) {
 		gbuf_adds(&res->text, "unknown source \"");
 		gbuf_adds(&res->text, source);

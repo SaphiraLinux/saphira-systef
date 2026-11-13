@@ -52,8 +52,16 @@ typedef struct {
   int skipped;
   /* 1-based result page; windowing is deterministic per (query, page). */
   int page;
+  /* Excerpts quoted per page (density knob, default API_PAGE_SIZE). */
+  int ppsize;
+  /* First quoted path per later page, in scan order: tells the agent which
+   * later page holds what without fetching it. Bounded, paths truncated. */
+  int leadpage[8];
+  char leadpath[8][256];
+  int nlead;
 } search;
 #define API_PAGE_SIZE 3
+#define API_MAX_PER_PAGE 10
 static int ident(int c) { return isalnum((unsigned char)c) || c == '_'; }
 static int symbol_ok(const char *s) {
  if (!s || !(isalpha((unsigned char)*s) || *s == '_')) return 0;
@@ -310,10 +318,11 @@ static void docs_visit(search *s,const char *path) {
      if(b.p[stop++]=='\n') { lines++; if(stop<b.len && b.p[stop]=='\n') break; }
     }
     if(stop-i>1200) stop=end;
-    /* Accepted excerpts are ordered same-package first (two-pass walk),
-     * then code-context, then the rest; the current page quotes its window.
-     * Exact duplicates are kept once and not counted; prose-only matches
-     * from a foreign package are counted but not quoted. */
+    /* Accepted excerpts are emitted foreign/unverified first (pass 0), with
+     * same-package matches appended by a second pass only when the first
+     * pass left the requested page unfilled. The current page quotes its
+     * window. Exact duplicates are kept once and not counted; prose-only
+     * matches from a foreign package are counted but not quoted. */
     int ord = s->docs;
     { unsigned long h=excerpt_hash(b.p+i, stop-i);
       int dup=0;
@@ -331,7 +340,14 @@ static void docs_visit(search *s,const char *path) {
       if (!matched_owner && s->pkg_known && !code) { s->skipped++; break; }
     }
     s->docs++;
-    int inwin = ord >= (s->page-1)*API_PAGE_SIZE && ord < s->page*API_PAGE_SIZE;
+    int ordpage = ord / s->ppsize + 1;
+    int inwin = ordpage == s->page;
+    if (!inwin && ordpage > s->page && s->nlead < 8 &&
+        (s->nlead == 0 || ordpage > s->leadpage[s->nlead-1])) {
+     s->leadpage[s->nlead] = ordpage;
+     snprintf(s->leadpath[s->nlead], sizeof s->leadpath[0], "%s", path);
+     s->nlead++;
+    }
     if (inwin) {
      ref(&s->res->text,"DOCUMENT: ",path,ln);
      gbuf_adds(&s->res->text,matched_owner
@@ -582,7 +598,7 @@ static void packages(search *s, const char *missing) {
  if(!found) gbuf_adds(&s->res->text,"Package ownership/availability cannot be determined from local metadata.\n");
  if(!s->docs) gbuf_adds(&s->res->text,"Documentation provider unknown; header ownership does not establish a documentation package. No installation command verified.\n");
 }
-int sysref_api(const char *query, int semantics, int page, result *res) {
+int sysref_api(const char *query, int semantics, int page, int per_page, result *res) {
  char q[SYSREF_MAX_QUERY_BYTES+1]; snprintf(q,sizeof q,"%s",query);
  char *save=NULL,*first=strtok_r(q," \t\n",&save),*second=strtok_r(NULL," \t\n",&save),*extra=strtok_r(NULL," \t\n",&save);
  if(!first || extra) { gbuf_adds(&res->text,"Use [header.h] symbol (one C identifier).\n"); res->status=1; return 1; }
@@ -590,7 +606,9 @@ int sysref_api(const char *query, int semantics, int page, result *res) {
  int named=second || strchr(first,'.') || strchr(first,'/');
  if((second || !named) && !symbol_ok(sym)) { gbuf_adds(&res->text,"Invalid C symbol.\n"); res->status=1; return 1; }
  if(named && (first[0]=='/' || strstr(first,".."))) { gbuf_adds(&res->text,"Header must be relative to an include root.\n"); res->status=1; return 1; }
-  search s={.symbol=sym,.res=res,.page=(page<1?1:page)};
+ if (per_page < 1) per_page = API_PAGE_SIZE;
+ if (per_page > API_MAX_PER_PAGE) per_page = API_MAX_PER_PAGE;
+  search s={.symbol=sym,.res=res,.page=(page<1?1:page),.ppsize=per_page};
   if(semantics && (second || !named)) { gbuf_adds(&res->text,"SYMBOL: "); gbuf_adds(&res->text,sym); gbuf_addch(&res->text,'\n'); }
  const char *roots=root("SYSREF_INCLUDE_PATH","/usr/include:/usr/local/include");
  if (!named && !semantics) {
@@ -664,16 +682,17 @@ int sysref_api(const char *query, int semantics, int page, result *res) {
   rs=strdup(dr); sp=NULL;
   for(r=strtok_r(rs,":",&sp);r;r=strtok_r(NULL,":",&sp)) walk(&s,r,0,docs_visit);
   free(rs);
-   /* Verified same-package/version documentation gets the first slots.
-    * Only repeat the bounded scan if unverified candidates remain. */
-   if(s.docs < s.page*API_PAGE_SIZE && s.candidates>s.docs) {
+   /* Same-package matches are appended by a second pass, but only when the
+    * first pass left the requested page unfilled: a full flood page stays
+    * foreign/unverified, later pages may mix. */
+   if(s.docs < s.page*s.ppsize && s.candidates>s.docs) {
     s.docpass=1; s.files=0; s.readbytes=0;
     rs=strdup(dr); sp=NULL;
     for(r=strtok_r(rs,":",&sp);r;r=strtok_r(NULL,":",&sp)) walk(&s,r,0,docs_visit);
     free(rs);
    }
    {
-    int total = (s.docs + API_PAGE_SIZE - 1) / API_PAGE_SIZE;
+    int total = (s.docs + s.ppsize - 1) / s.ppsize;
     if (total < 1) total = 1;
     if (s.page > total) {
      char nb[96];
@@ -690,13 +709,26 @@ int sysref_api(const char *query, int semantics, int page, result *res) {
      }
     }
    }
-    if(s.docs > s.page*API_PAGE_SIZE) { char mb[256]; snprintf(mb, sizeof mb, "Additional documentation matches on later pages; use page=%d for more. For full package context use source=doc with the named package.\n", s.page+1); gbuf_adds(&res->text, mb); }
-    else if(s.docs>API_PAGE_SIZE) gbuf_adds(&res->text,"Additional documentation matches omitted; use source=doc with the named package for more context.\n");
+    if(s.docs > s.page*s.ppsize) { char mb[256]; snprintf(mb, sizeof mb, "Additional documentation matches on later pages; use page=%d for more. For full package context use source=doc with the named package.\n", s.page+1); gbuf_adds(&res->text, mb); }
+    else if(s.docs>s.ppsize) gbuf_adds(&res->text,"Additional documentation matches omitted; use source=doc with the named package for more context.\n");
+   /* Later-page lead paths, in scan order: the agent can jump to the page
+    * holding a promising file instead of paging linearly. Bounded and only
+    * for pages after the current one. */
+   if (s.nlead > 0 && s.page < (s.docs + s.ppsize - 1) / s.ppsize) {
+    gbuf_adds(&res->text, "Later pages lead with:");
+    for (int li = 0; li < s.nlead; li++) {
+     if (s.leadpage[li] <= s.page) continue;
+     char lb[320];
+     snprintf(lb, sizeof lb, " page %d: %s;", s.leadpage[li], s.leadpath[li]);
+     gbuf_adds(&res->text, lb);
+    }
+    gbuf_adds(&res->text, "\n");
+   }
    /* Lifecycle block: concise evidence-first summary. A signature alone
     * cannot establish argument meaning; the agent must see whether
     * authoritative local documentation exists before inferring behaviour. */
      if(!s.docs) gbuf_adds(&res->text,"DOCUMENTATION: unavailable in searched files (not proof that a documentation package exists).\n");
-     else { char dn[96]; int qn = s.docs - (s.page-1)*API_PAGE_SIZE; if (qn < 0) qn = 0; if (qn > API_PAGE_SIZE) qn = API_PAGE_SIZE; if (s.page > 1 || s.docs > API_PAGE_SIZE) snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) total, %d quoted on this page.\n",s.docs,qn); else snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) quoted above.\n",s.docs); gbuf_adds(&res->text,dn); }
+     else { char dn[96]; int qn = s.docs - (s.page-1)*s.ppsize; if (qn < 0) qn = 0; if (qn > s.ppsize) qn = s.ppsize; if (s.page > 1 || s.docs > s.ppsize) snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) total, %d quoted on this page.\n",s.docs,qn); else snprintf(dn,sizeof dn,"DOCUMENTATION: %d local excerpt(s) quoted above.\n",s.docs); gbuf_adds(&res->text,dn); }
      if(s.skipped>0) { char sb[160]; snprintf(sb,sizeof sb,"Omitted %d low-relevance match(es) (prose-only from other packages); narrow with source=doc and the package name.\n",s.skipped); gbuf_adds(&res->text,sb); }
    if(semantics && s.matches) parameters_block(&s);
    if(s.docs) gbuf_adds(&res->text,"ARGUMENTS: described only where quoted above; no separate parameter table inferred from types.\n");

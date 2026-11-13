@@ -41,9 +41,11 @@ typedef struct {
 #define SYSREF_BODY_MAX_BYTES (64u * 1024u)
 
 /* source: NULL or "man" = native man pages (default); "doc" = /usr/share/doc.
- * page is 1-based; callers validate (page < 1 is treated as 1). */
-int sysref_run(const char *query, const char *section, const char *source, int page, result *res);
-int sysref_api(const char *query, int semantics, int page, result *res);
+ * page is 1-based; callers validate (page < 1 is treated as 1).
+ * per_page sizes the api documentation-excerpt window (1-10, default 3);
+ * the man/doc paths page whole lines and ignore it. */
+int sysref_run(const char *query, const char *section, const char *source, int page, int per_page, result *res);
+int sysref_api(const char *query, int semantics, int page, int per_page, result *res);
 void result_free(result *res);
 
 #endif
